@@ -1,6 +1,6 @@
 {
   "name": "snip-ocr",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "本地截图工具 - 系统截图平替（截图/复制/保存/贴图/本地识字）",
   "main": "./out/main/index.js",
   "author": "snip-ocr",

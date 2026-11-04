@@ -11,7 +11,7 @@ Electron 桌面截图工具，用来平替系统截图：主窗口 + 托盘常�
 
 - 语言 / 框架：TypeScript 5.9.3（strict，双向配置 `tsconfig.node.json` + `tsconfig.web.json`）、Electron 33.4.11、React 19.3.1、Vite 8.3.5 + electron-vite 6.0.0
 - 关键依赖：`electron-screenshots` 0.6.2（遮罩窗与选区，内部用 `node-screenshots` 原生捕获，`desktopCapturer` 兜底）、`electron-builder` 26.18.0（NSIS + portable）
-- 数据库 / 消息队列 / 外部服务：**无**。持久化只在 `data/`：`config.json`（原子写：临时文件 + rename）、`icons/custom.png`（自定义图标）、`pin-history/`（贴图历史，上限 50 条）、`ocr/`（OCR 临时图，结束即删）。打包态 `userData` 被指到 exe 同级 `data/`；安装目录不可写时回退 `%APPDATA%\snip-ocr`。卸载必须无残留（[build/installer.nsh](./build/installer.nsh) 兜底清理 `$APPDATA\snip-ocr`）
+- 数据库 / 消息队列 / 外部服务：**无**。持久化只在 `data/`：`config.json`（原子写：临时文件 + rename）、`icons/custom.png`（自定义图标）、`pin-history/`（截图历史，上限 50 条）、`ocr/`（OCR 临时图，结束即删）。打包态 `userData` 被指到 exe 同级 `data/`；安装目录不可写时回退 `%APPDATA%\snip-ocr`。卸载必须无残留（[build/installer.nsh](./build/installer.nsh) 兜底清理 `$APPDATA\snip-ocr`）
 - 包管理器：**npm**（本仓库用 `package-lock.json`，不要改成 pnpm）
 - Lint 工具：**未引入**。静态检查由 `npm run typecheck` 承担；新增 lint 依赖属未批准依赖，需先同意
 
@@ -37,11 +37,11 @@ src/
 ├── main/
 │   ├── index.ts          # 启动、托盘与菜单、单实例锁、设置/贴图快捷键、IPC 装配
 │   ├── homeWindow.ts     # 主窗口：首页/设置弹窗、标题栏动作、显示/隐藏、启动参数
-│   ├── screenshot.ts     # ⛔ 唯一截图入口：遮罩生命周期、上次截图缓存、6 动作分发（贴图/确定分离）、长图会话、singleWindow 复用
-│   ├── stitch.ts         # 长图纵向拼接：固定列采样 + 逐行差匹配重叠，20000 物理像素上限
-│   ├── overlayUi.ts      # 遮罩注入：6 按钮工具栏（含长图）、OCR 侧栏、主题图标、裁剪取图
+│   ├── screenshot.ts     # ⛔ 唯一截图入口：遮罩生命周期、上次截图缓存、6 动作分发（贴图/确定分离）、长图被动跟随会话、singleWindow 复用
+│   ├── stitch.ts         # 长图纵向拼接：整行灰度指纹多候选打分、固定表头屏蔽、增量重叠（供实时预览）、20000 物理像素分段导出
+│   ├── overlayUi.ts      # 遮罩注入：6 按钮工具栏（含长图）、长图细边框 HUD、实时预览缩略窗、可拖拽 OCR 侧栏、主题图标、裁剪取图
 │   ├── pin.ts            # 贴图窗口：几何换算、创建/显示、拖拽缩放、单张关闭、临时图清理
-│   ├── pinHistory.ts     # 贴图历史：原图/缩略图落盘、history.json 索引、上限 50 条淘汰
+│   ├── pinHistory.ts     # 截图历史：复制/另存/贴图/长图四种来源，原图/缩略图落盘、history.json 索引、上限 50 条淘汰
 │   ├── ocr.ts            # Windows 本地 OCR：临时图、PowerShell/WinRT 桥、超时与文本规范化
 │   ├── config.ts         # userData 读写、配置归一化、打包态 data/ 目录与旧目录迁移
 │   └── selftest.ts       # 合成事件 + DOM 断言的自动化验收
@@ -63,7 +63,7 @@ scripts/
 - ❌ 禁止把截图逻辑写出 [src/main/screenshot.ts](./src/main/screenshot.ts)（不得散落到 `index.ts`）；贴图窗口逻辑集中在 [src/main/pin.ts](./src/main/pin.ts)
 - ❌ 禁止在 `src/shared/ipc.ts` 之外手写 IPC 通道名字面量，两端只能从它取值
 - ❌ 禁止引入任何网络请求代码、License / 授权校验代码、支付 / 登录 / 云服务代码
-- ❌ 禁止做标注、截图历史、真实的更新服务 / 自动下载安装（截图工具栏只允许 OCR / 贴图 / 另存为 / 长图 / 取消 / 确定；贴图页只渲染图片与拖拽缩放，不得引入编辑器/标注逻辑）。贴图历史（上限 50 条）是既有功能，不属此禁令；设置里的「检查更新」入口保留，但必须维持离线桩实现：不联网、不下载，只报告当前版本
+- ❌ 禁止做标注与真实的更新服务 / 自动下载安装（截图工具栏只允许 OCR / 贴图 / 另存为 / 长图 / 取消 / 确定；贴图页只渲染图片与拖拽缩放，不得引入编辑器/标注逻辑）。截图历史保留 50 条，属既有功能；设置里的「检查更新」入口保留，但必须维持离线桩实现：不联网、不下载，只报告当前版本
 - ❌ 禁止把 OCR 写出 [src/main/ocr.ts](./src/main/ocr.ts)：只允许 Windows.Media.Ocr 本地识别，不得联网、不得引入 OCR 依赖或远程服务；失败要如实通知，不得静默吞掉
 - ❌ 禁止识字后自动覆盖剪贴板：结果必须进入遮罩内可编辑侧栏（[src/main/overlayUi.ts](./src/main/overlayUi.ts)），由用户点「复制」才写入剪贴板
 - ❌ 禁止让主窗口关闭即退出：主窗关闭只隐藏到托盘，退出只走托盘菜单；截图开始前必须隐藏主窗，结束后按原可见状态恢复
@@ -86,7 +86,7 @@ scripts/
 
 1. `npm run typecheck` —— 两份 tsconfig（node / web）均零报错
 2. `npm run build` —— 产出 `out/main`、`out/preload`、`out/renderer`（含独立 `pin.html`）
-3. `npm run selftest` —— 要求末行输出 `[selftest] ALL PASS`（最近一次开发态实跑：105 项 PASS + 8 项 INFO，其中 1 条 INFO 为 `Alt+A` 被占用时的注册结果；覆盖主窗首页/状态条/设置三页/图标预览、工具栏 6 动作（含独立贴图、确定复制、长图入口/续采/去重复制）、拼接核心（重叠行数/无重叠追加/颜色 round-trip/高度上限）、双击复制、保存、贴图创建/尺寸/位置/1:1/滚轮缩放与百分比/Ctrl+0/四角手柄/拖拽不回弹/8 向缩放/单张关闭/多贴图、遮罩内 OCR 侧栏动态选边/编辑/字数/手动复制/关闭/迟到结果丢弃、贴图快捷键注册、Windows OCR 识别）。验证 dev 的 http 页面可跑 `npx electron-vite dev -- --selftest`（`--` 之后的参数会透传给 Electron）
+3. `npm run selftest` —— 要求末行输出 `[selftest] ALL PASS`（最近一次开发态实跑：126 项 PASS + 8 项 INFO，其中 1 条 INFO 为 `Alt+A` 被占用时的注册结果；覆盖主窗首页/状态条/设置三页/图标预览、工具栏 6 动作（含独立贴图、确定复制、长图收起遮罩进入 HUD/选区透出真实屏幕（冻结图不可见）/实时预览在选区外且穿透/HUD 按钮与工具栏同款/完成复制/完成后另存与 OCR/关闭/长图单帧与普通截图像素一致）、拼接核心（重叠行数/容差打分/固定表头/到底指纹/分段导出/颜色 round-trip）、双击复制、保存、贴图创建/尺寸/位置/1:1/滚轮缩放与百分比/Ctrl+0/四角手柄/拖拽不回弹/8 向缩放/单张关闭/多贴图、遮罩内 OCR 侧栏动态选边/标题条拖拽不越界/textarea 仍可输入选中/编辑/字数/手动复制/关闭/迟到结果丢弃、贴图快捷键注册、Windows OCR 识别、截图历史覆盖复制/另存/贴图/长图四种来源且索引落盘、取消不记录）。验证 dev 的 http 页面可跑 `npx electron-vite dev -- --selftest`（`--` 之后的参数会透传给 Electron）
 4. 改动涉及打包、图标或依赖时，追加 `npm run pack`，并对 `dist/win-unpacked/snip-ocr.exe --selftest` 再跑一次验收（最近一次打包版实跑：90 项 PASS + 7 项 INFO，未核实（本轮未重跑打包态），含「运行数据位于程序目录 data/」「旧 %APPDATA% 已清理」「贴图走 snip-pin://」断言）。改动涉及安装/数据目录时，还要做一次静默安装 → 运行 → 静默卸载，确认安装目录、`%APPDATA%\snip-ocr`、快捷方式与卸载注册表项全部清除
    打包环境注意：无外网时 `@electron/get` 会卡在校验 Electron 缓存，需设 `ELECTRON_MIRROR`（本机用 `https://npmmirror.com/mirrors/electron/`）；若 IDE/索引器锁住新解压的 `default_app.asar` 导致 `EPERM/EBUSY`，把输出指到工作区外（`npx electron-builder --config.directories.output=<临时目录>`）再拷回 `dist/`。
 

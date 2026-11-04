@@ -43,10 +43,12 @@ import {
 import { pinService, registerPinScheme } from './pin'
 import {
   clearPinHistory,
+  copyPinHistoryItem,
   deletePinHistory,
   listPinHistory,
   onPinHistoryChange,
   readPinHistoryInput,
+  savePinHistoryItem,
 } from './pinHistory'
 import { screenshotService, trayIconPath, type CaptureOutcome } from './screenshot'
 import { runSelftest } from './selftest'
@@ -360,6 +362,14 @@ function boot(): void {
   ipcMain.handle(IPC.pinHistoryClear, async () => {
     await clearPinHistory()
     return listPinHistory()
+  })
+  ipcMain.handle(IPC.pinHistoryCopy, async (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id) return { ok: false, error: '参数无效' } satisfies SetHotkeyResult
+    return (await copyPinHistoryItem(id)) satisfies SetHotkeyResult
+  })
+  ipcMain.handle(IPC.pinHistorySave, async (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id) return { ok: false, error: '参数无效' } satisfies SetHotkeyResult
+    return (await savePinHistoryItem(id)) satisfies SetHotkeyResult
   })
   ipcMain.handle(IPC.pinHistoryPin, async (_event, id: unknown) => {
     if (typeof id !== 'string' || !id) return { ok: false, error: '参数无效' } satisfies SetHotkeyResult

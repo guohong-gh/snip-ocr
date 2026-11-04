@@ -4,6 +4,7 @@ import { prettyAccelerator } from './accelerator'
 import {
   DEFAULT_HOTKEY,
   DEFAULT_PIN_HOTKEY,
+  type HistorySource,
   type IconTheme,
   type PinHistoryItem,
   type SetHotkeyResult,
@@ -12,6 +13,13 @@ import {
 import { toolIconFor, TOOL_LABELS, type ToolKey } from '@shared/icons'
 
 type Tab = 'hotkeys' | 'general' | 'icons'
+
+const HISTORY_SOURCE_LABELS: Record<HistorySource, string> = {
+  copy: '复制',
+  save: '另存',
+  pin: '贴图',
+  longshot: '长图',
+}
 
 interface HotkeySettingProps {
   title: string
@@ -327,7 +335,7 @@ export default function App() {
   }
 
   const clearHistory = async (): Promise<void> => {
-    if (!window.confirm('清空全部贴图历史？此操作不可恢复。')) return
+    if (!window.confirm('清空全部截图历史？此操作不可恢复。')) return
     setHistory(await window.snip.clearPinHistory())
     showToast('已清空')
   }
@@ -335,6 +343,17 @@ export default function App() {
   const repinHistoryItem = async (id: string): Promise<void> => {
     const result = await window.snip.pinFromHistory(id)
     showToast(result.ok ? '已贴出' : (result.error ?? '贴出失败'))
+  }
+
+  const copyHistoryItem = async (id: string): Promise<void> => {
+    const result = await window.snip.copyFromHistory(id)
+    showToast(result.ok ? '已复制' : (result.error ?? '复制失败'))
+  }
+
+  const saveHistoryItem = async (id: string): Promise<void> => {
+    const result = await window.snip.saveFromHistory(id)
+    if (result.ok) showToast('已保存')
+    else if (result.error !== '已取消') showToast(result.error ?? '另存失败')
   }
 
   return (
@@ -431,25 +450,25 @@ export default function App() {
 
       <main className={`app-body${tab || historyOpen ? ' settings-mode' : ''}`}>
         {historyOpen ? (
-          <section className="settings-page" aria-label="贴图历史">
+          <section className="settings-page" aria-label="截图历史">
             <header className="settings-head">
               <button
                 type="button"
                 className="x-btn"
-                aria-label="关闭贴图历史"
+                aria-label="关闭截图历史"
                 title="返回首页"
                 onClick={() => setHistoryOpen(false)}
               >
                 <BackIcon />
               </button>
-              <h2>贴图历史</h2>
+              <h2>截图历史</h2>
               <span className="settings-version">
                 {history?.length ?? 0} 条 · 上限 {PIN_HISTORY_LIMIT} 条
               </span>
             </header>
             <div className="panes">
               <div className="history-bar">
-                <span className="history-note">按创建时间倒序，点击条目重新贴出</span>
+                <span className="history-note">按创建时间倒序；点击缩略图重新贴出，复制/另存不新增记录</span>
                 <button
                   type="button"
                   className="ghost-btn danger"
@@ -460,9 +479,9 @@ export default function App() {
                 </button>
               </div>
               {history === null ? (
-                <p className="history-empty">正在读取贴图历史…</p>
+                <p className="history-empty">正在读取截图历史…</p>
               ) : history.length === 0 ? (
-                <p className="history-empty">还没有贴图历史。贴图或按贴图快捷键后会自动记录。</p>
+                <p className="history-empty">还没有截图历史。复制、另存、贴图或长图完成后会自动记录。</p>
               ) : (
                 <ul className="history-list">
                   {history.map((item) => (
@@ -479,14 +498,30 @@ export default function App() {
                         <span className="history-meta">
                           <span className="history-time">{formatHistoryTime(item.createdAt)}</span>
                           <span className="history-size">
-                            {item.imageWidth} × {item.imageHeight} px
+                            {HISTORY_SOURCE_LABELS[item.source]} · {item.imageWidth} × {item.imageHeight} px
                           </span>
                         </span>
                       </button>
                       <button
                         type="button"
+                        className="history-act"
+                        title="复制这张截图"
+                        onClick={() => void copyHistoryItem(item.id)}
+                      >
+                        复制
+                      </button>
+                      <button
+                        type="button"
+                        className="history-act"
+                        title="另存为"
+                        onClick={() => void saveHistoryItem(item.id)}
+                      >
+                        另存
+                      </button>
+                      <button
+                        type="button"
                         className="history-del"
-                        aria-label="删除这条贴图历史"
+                        aria-label="删除这条截图历史"
                         title="删除"
                         onClick={() => void removeHistoryItem(item.id)}
                       >
@@ -739,7 +774,7 @@ export default function App() {
                     打开设置
                   </button>
                   <button type="button" className="ghost-btn" onClick={() => setHistoryOpen(true)}>
-                    贴图历史
+                    截图历史
                   </button>
                 </div>
               </div>

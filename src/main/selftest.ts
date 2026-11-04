@@ -6,8 +6,9 @@ import { DEFAULT_HOTKEY, DEFAULT_PIN_HOTKEY, type PinMeta } from '@shared/ipc'
 import { HOME_TITLE, openMainWindow } from './homeWindow'
 import { mergeOcrLines, normalizeOcrText, ocrService, type OcrLineBox } from './ocr'
 import { computePinPlacement, pinImageUrl, pinService, pinTempDir, resolvePinImagePath } from './pin'
+import { listPinHistory, pinHistoryDir } from './pinHistory'
 import { screenshotService, trayIconPath, type CaptureOutcome } from './screenshot'
-import { stitchVertical } from './stitch'
+import { fingerprintPixels, framesLookSame, stitchVertical } from './stitch'
 
 interface ToolbarButton {
   title: string
@@ -620,6 +621,64 @@ async function testOcrSidebar(wc: WebContents): Promise<void> {
     sidebar.open && sidebar.editable && sidebar.value.includes('自检 OCR'),
     sidebar,
   )
+  const drag = await evalJson<{
+    headHits: boolean
+    moved: boolean
+    inViewport: boolean
+    before: { left: number; top: number; width: number; height: number }
+    after: { left: number; top: number; width: number; height: number }
+    viewport: { width: number; height: number }
+  }>(
+    wc,
+    `const bar = document.getElementById('snip-ocr-sidebar');
+     if (!bar) return null;
+     const head = bar.querySelector('.snip-sidebar-head');
+     const rectOf = (r) => ({ left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) });
+     const before = rectOf(bar.getBoundingClientRect());
+     const startX = before.left + 30;
+     const startY = before.top + 8;
+     head.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: startX, clientY: startY }));
+     window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: window.innerWidth - 20, clientY: window.innerHeight - 20 }));
+     window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: window.innerWidth - 20, clientY: window.innerHeight - 20 }));
+     const after = rectOf(bar.getBoundingClientRect());
+     return {
+       headHits: Boolean(head),
+       moved: after.left !== before.left || after.top !== before.top,
+       inViewport: after.left >= 0 && after.top >= 0 && after.left + after.width <= window.innerWidth && after.top + after.height <= window.innerHeight,
+       before,
+       after,
+       viewport: { width: window.innerWidth, height: window.innerHeight },
+     };`,
+  )
+  check('OCR 侧栏标题条可拖拽', Boolean(drag?.headHits && drag.moved), drag)
+  check('OCR 侧栏拖拽后不越界', Boolean(drag?.inViewport), drag)
+
+  const textDrag = await evalJson<{ moved: boolean; selection: number[]; active: boolean; editable: boolean }>(
+    wc,
+    `const bar = document.getElementById('snip-ocr-sidebar');
+     const ta = bar ? bar.querySelector('.snip-sidebar-text') : null;
+     if (!bar || !ta) return null;
+     const before = Math.round(bar.getBoundingClientRect().left);
+     const r = ta.getBoundingClientRect();
+     ta.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: r.left + 20, clientY: r.top + 20 }));
+     window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 40, clientY: 40 }));
+     window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 40, clientY: 40 }));
+     const after = Math.round(bar.getBoundingClientRect().left);
+     ta.focus();
+     ta.setSelectionRange(0, 5);
+     return {
+       moved: after !== before,
+       selection: [ta.selectionStart, ta.selectionEnd],
+       active: document.activeElement === ta,
+       editable: !ta.disabled && !ta.readOnly,
+     };`,
+  )
+  check(
+    '拖拽只在标题条生效，textarea 仍可输入/选中',
+    Boolean(textDrag && !textDrag.moved && textDrag.active && textDrag.editable && textDrag.selection.join('-') === '0-5'),
+    textDrag,
+  )
+
   check('OCR 默认不自动复制', clipboard.readText() !== '自检 OCR 文本 ABC 123', {
     clipboard: clipboard.readText().slice(0, 40),
   })
@@ -691,6 +750,7 @@ async function testOcrSidebar(wc: WebContents): Promise<void> {
 /** Esc 取消 */
 async function testEscape(wc: WebContents, outcomes: CaptureOutcome[]): Promise<void> {
   const before = outcomes.length
+  const historyBefore = (await listPinHistory()).length
   await screenshotService.startCapture()
   await sleep(500)
   const opened = findOverlayWindow() !== undefined
@@ -700,6 +760,11 @@ async function testEscape(wc: WebContents, outcomes: CaptureOutcome[]): Promise<
   check('Esc 关闭遮罩窗', opened && findOverlayWindow() === undefined, { opened })
   const last = outcomes[outcomes.length - 1]
   check('Esc 触发 cancel 事件', outcomes.length > before && last?.kind === 'cancelled', { last: last?.kind ?? null })
+  const historyAfter = (await listPinHistory()).length
+  check('取消的截图不写入历史', historyAfter === historyBefore, {
+    before: historyBefore,
+    after: historyAfter,
+  })
 }
 
 function testPinPlacementMath(): void {
@@ -1115,6 +1180,10 @@ interface StitchFrameSpec {
   height: number
   red: number
   blue: number
+  /** 顶部固定表头行数，渲染成高对比色 */
+  headerRows?: number
+  /** 行号编码的绿色通道步长，默认 2 */
+  step?: number
 }
 
 function dataUrlToBuffer(url: string): Buffer {
@@ -1130,9 +1199,15 @@ async function renderStitchFrames(wc: WebContents, specs: StitchFrameSpec[]): Pr
       canvas.width = spec.width;
       canvas.height = spec.height;
       const ctx = canvas.getContext('2d');
+      const headerRows = spec.headerRows || 0;
+      const step = spec.step || 2;
       for (let row = 0; row < spec.height; row += 1) {
-        const green = Math.min(255, (spec.startRow + row) * 2);
-        ctx.fillStyle = 'rgb(' + spec.red + ',' + green + ',' + spec.blue + ')';
+        if (row < headerRows) {
+          ctx.fillStyle = 'rgb(20,250,20)';
+        } else {
+          const green = Math.min(255, (spec.startRow + row - headerRows) * step);
+          ctx.fillStyle = 'rgb(' + spec.red + ',' + green + ',' + spec.blue + ')';
+        }
         ctx.fillRect(0, row, spec.width, 1);
       }
       return canvas.toDataURL('image/png');
@@ -1157,15 +1232,15 @@ async function testStitchCore(wc: WebContents): Promise<void> {
 
   const image = nativeImage.createFromBuffer(merged.buffer)
   const bitmap = image.toBitmap()
-  const greenAt = (y: number): number => bitmap[y * merged.width * 4 + 1]
+  const greenAt = (source: Buffer, width: number, y: number): number => source[y * width * 4 + 1]
   check(
     '拼接结果行号连续且无重复行',
-    greenAt(0) === 0 &&
-      greenAt(40) === 80 &&
-      greenAt(59) === 118 &&
-      greenAt(60) === 120 &&
-      greenAt(89) === 178,
-    { rows: [0, 40, 59, 60, 89].map((y) => greenAt(y)) },
+    greenAt(bitmap, merged.width, 0) === 0 &&
+      greenAt(bitmap, merged.width, 40) === 80 &&
+      greenAt(bitmap, merged.width, 59) === 118 &&
+      greenAt(bitmap, merged.width, 60) === 120 &&
+      greenAt(bitmap, merged.width, 89) === 178,
+    { rows: [0, 40, 59, 60, 89].map((y) => greenAt(bitmap, merged.width, y)) },
   )
 
   const extended = stitchVertical([first, disjoint])
@@ -1175,20 +1250,78 @@ async function testStitchCore(wc: WebContents): Promise<void> {
     { height: extended.height, overlaps: extended.overlaps },
   )
 
+  const [noisyA, noisyB] = await renderStitchFrames(wc, [
+    { width: 40, startRow: 0, height: 60, red: 100, blue: 200 },
+    { width: 40, startRow: 40, height: 50, red: 130, blue: 170 },
+  ])
+  const noisy = stitchVertical([noisyA, noisyB])
+  check(
+    '轻微色差（压缩/抗锯齿）下仍按重叠打分拼接',
+    noisy.height === 90 && noisy.overlaps[0] === 20,
+    { height: noisy.height, overlaps: noisy.overlaps },
+  )
+
+  const [headerA, headerB] = await renderStitchFrames(wc, [
+    { width: 40, startRow: 0, height: 100, red: 100, blue: 200, headerRows: 6, step: 1 },
+    { width: 40, startRow: 40, height: 100, red: 100, blue: 200, headerRows: 6, step: 1 },
+  ])
+  const sticky = stitchVertical([headerA, headerB])
+  const stickyBitmap = nativeImage.createFromBuffer(sticky.buffer).toBitmap()
+  check(
+    '固定表头只保留一份，内容行连续',
+    sticky.height === 140 &&
+      greenAt(stickyBitmap, sticky.width, 0) === 250 &&
+      greenAt(stickyBitmap, sticky.width, 5) === 250 &&
+      greenAt(stickyBitmap, sticky.width, 6) === 0 &&
+      greenAt(stickyBitmap, sticky.width, 139) === 133,
+    {
+      height: sticky.height,
+      rows: [0, 5, 6, 139].map((y) => greenAt(stickyBitmap, sticky.width, y)),
+    },
+  )
+
+  const pixelFrame = (shift: number): Buffer => {
+    const width = 64
+    const height = 48
+    const buffer = Buffer.alloc(width * height * 4)
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const offset = (y * width + x) * 4
+        const value = ((x + shift + y) % 8) * 32
+        buffer[offset] = value
+        buffer[offset + 1] = value
+        buffer[offset + 2] = value
+      }
+    }
+    return buffer
+  }
+  const base = fingerprintPixels(pixelFrame(0), 64, 48)
+  check(
+    '滚动到底判定：同画面指纹一致',
+    framesLookSame(base, fingerprintPixels(pixelFrame(0), 64, 48)),
+    { cells: base.values.length },
+  )
+  check(
+    '滚动到底判定：内容变化后指纹不同',
+    !framesLookSame(base, fingerprintPixels(pixelFrame(3), 64, 48)),
+    { cells: base.values.length },
+  )
+
   const [tallA, tallB] = await renderStitchFrames(wc, [
     { width: 2, startRow: 0, height: 11000, red: 100, blue: 0 },
     { width: 2, startRow: 0, height: 11000, red: 0, blue: 200 },
   ])
-  let limitError: string | null = null
-  try {
-    stitchVertical([tallA, tallB])
-  } catch (error) {
-    limitError = error instanceof Error ? error.message : String(error)
-  }
+  const tall = stitchVertical([tallA, tallB])
   check(
-    '超过 20000 物理像素上限时报错',
-    limitError !== null && limitError.includes('20000'),
-    { limitError },
+    '超过 20000 物理像素改为分段导出（不丢帧、不抛错）',
+    tall.height === 22000 &&
+      tall.segments.length === 2 &&
+      tall.segments[0].height === 20000 &&
+      tall.segments[1].height === 2000,
+    {
+      height: tall.height,
+      segments: tall.segments.map((segment) => segment.height),
+    },
   )
 
   const samplePath = join(app.getPath('temp'), 'snip-selftest-longshot-stitch.png')
@@ -1202,54 +1335,290 @@ async function testStitchCore(wc: WebContents): Promise<void> {
   })
 }
 
+/** 逐像素比较两帧 BGRA 位图（尺寸必须一致） */
+function compareBitmaps(a: Buffer, b: Buffer): { mean: number; max: number; ratioSame: number } {
+  const pixels = Math.min(a.length, b.length) / 4
+  let sum = 0
+  let max = 0
+  let same = 0
+  for (let i = 0; i < pixels; i += 1) {
+    const offset = i * 4
+    let equal = true
+    for (let channel = 0; channel < 3; channel += 1) {
+      const diff = Math.abs(a[offset + channel] - b[offset + channel])
+      sum += diff
+      if (diff > max) max = diff
+      if (diff > 0) equal = false
+    }
+    if (equal) same += 1
+  }
+  return {
+    mean: sum / Math.max(1, pixels * 3),
+    max,
+    ratioSame: same / Math.max(1, pixels),
+  }
+}
+
+/** 长图 HUD 按钮是否复用工具栏同一套视觉（同 class + 同变量解析结果） */
+async function compareLongHudButton(
+  wc: WebContents,
+  action: string,
+  tool: string,
+): Promise<{ match: boolean; hud: Record<string, string>; toolbar: Record<string, string> } | null> {
+  return evalJson(
+    wc,
+    `const hud = document.querySelector('[data-snip-long="${action}"]');
+     const bar = document.querySelector('.snip-tool-btn[data-snip-tool="${tool}"]');
+     if (!hud || !bar) return null;
+     const pick = (el) => {
+       const s = getComputedStyle(el);
+       return { width: s.width, height: s.height, borderRadius: s.borderRadius, padding: s.padding,
+         backgroundColor: s.backgroundColor, color: s.color, fontSize: s.fontSize,
+         ink: s.getPropertyValue('--snip-strip-ink'), hover: s.getPropertyValue('--snip-strip-hover') };
+     };
+     const a = pick(hud);
+     const b = pick(bar);
+     const keys = Object.keys(a);
+     const match = keys.every((key) => a[key] === b[key]);
+     return { match, hud: a, toolbar: b };`,
+  )
+}
+
 async function testLongShot(wc: WebContents, outcomes: CaptureOutcome[], scaleFactor: number): Promise<void> {
+  // 基准：同一选区先走普通截图，用于逐像素比较长图首帧
+  const area = await usableArea(wc)
+  clipboard.clear()
+  await startAndDrag(wc)
+  const normalCanvasImage = await evalJson<{ visible: boolean }>(
+    wc,
+    `const image = document.querySelector('.screenshots-canvas-image');
+     if (!image) return { visible: false };
+     const s = getComputedStyle(image);
+     return { visible: s.display !== 'none' && s.visibility !== 'hidden' && Number(s.opacity) > 0 };`,
+  )
+  check('普通截图态选区内容可见', normalCanvasImage.visible, normalCanvasImage)
+  await doubleClickAt(wc, Math.round(area.width * 0.35), Math.round(area.height * 0.35))
+  await sleep(700)
+  const normalImage = clipboard.readImage()
+  const normalBitmap = normalImage.toBitmap()
+  const normalSize = normalImage.getSize()
+  if (findOverlayWindow()) {
+    await screenshotService.stopCapture()
+  }
+  // 等桌面画面稳定，避免长图把主窗状态刷新误判为新内容
+  await sleep(1500)
+
   clipboard.clear()
   await startAndDrag(wc)
   const started = await clickToolbarButton(wc, '长图')
-  await sleep(600)
-  check('「长图」收起遮罩并保留采集会话', started && findOverlayWindow() === undefined, {
-    started,
-    overlay: Boolean(findOverlayWindow()),
+  await sleep(1200)
+  const hud = await evalJson<{
+    visible: boolean
+    text: string
+    maskHidden: boolean
+    longMode: boolean
+    canvasImageHidden: boolean
+  }>(
+    wc,
+    `const bar = document.getElementById('snip-long-hud');
+     const mask = document.querySelector('.screenshots-background-mask');
+     const image = document.querySelector('.screenshots-background-image');
+     const selected = document.querySelector('.screenshots-canvas-image');
+     const selectedStyle = selected ? getComputedStyle(selected) : null;
+     return {
+       visible: Boolean(bar && getComputedStyle(bar).display !== 'none'),
+       text: bar ? bar.textContent || '' : '',
+       maskHidden: Boolean(mask && getComputedStyle(mask).display === 'none') &&
+         Boolean(image && getComputedStyle(image).display === 'none'),
+       longMode: document.body.classList.contains('snip-long'),
+       canvasImageHidden: Boolean(selectedStyle) &&
+         (selectedStyle.visibility === 'hidden' || Number(selectedStyle.opacity) === 0),
+     };`,
+  )
+  check('「长图」收起主遮罩，只留穿透 HUD', started && hud.longMode && hud.visible && hud.maskHidden, hud)
+  check('长图态选区透出真实屏幕（冻结图不可见）', hud.canvasImageHidden, {
+    canvasImageHidden: hud.canvasImageHidden,
   })
+  const followButton = await compareLongHudButton(wc, 'longshot-finish', 'confirm')
+  check('长图跟随态按钮复用工具栏样式', Boolean(followButton?.match), followButton)
+  check('跟随态显示已采集段数', /第 \d+ 段/.test(hud.text) && hud.text.includes('px'), { text: hud.text })
 
-  await screenshotService.startCapture()
-  const deadline = Date.now() + 5000
-  let probe: { restored: boolean; label: string; badge: string } | null = null
-  while (Date.now() < deadline) {
-    probe = await evalJson<{ restored: boolean; label: string; badge: string }>(
-      wc,
-      `const canvas = document.querySelector('.screenshots-canvas');
-       const label = document.querySelector('.snip-tool-btn[data-snip-tool="longshot"] .snip-tool-label');
-       const badge = document.getElementById('snip-size-badge');
-       const r = canvas ? canvas.getBoundingClientRect() : null;
-       return {
-         restored: Boolean(r && r.width >= 2 && r.height >= 2),
-         label: label ? label.textContent || '' : '',
-         badge: badge ? badge.textContent || '' : '',
-       };`,
-    )
-    if (probe && probe.restored && probe.label === '继续' && probe.badge.includes('第 2 段')) break
-    await sleep(100)
-  }
-  check('再次唤起自动重画上次选区', probe?.restored === true, probe)
-  check('长图按钮变为「继续」并显示段数', probe?.label === '继续' && probe.badge.includes('第 2 段'), probe)
+  const preview = await evalJson<{
+    visible: boolean
+    pointerEvents: string
+    rect: { x: number; y: number; width: number; height: number }
+    canvas: { width: number; height: number }
+    dpr: number
+    viewport: { width: number; height: number }
+    selection: { x: number; y: number; width: number; height: number }
+    overlapsSelection: boolean
+  } | null>(
+    wc,
+    `const el = document.getElementById('snip-long-preview');
+     const border = document.getElementById('snip-long-border');
+     if (!el || !border) return null;
+     const rect = el.getBoundingClientRect();
+     const canvas = el.querySelector('canvas');
+     const left = parseFloat(border.style.left || '0');
+     const top = parseFloat(border.style.top || '0');
+     const width = parseFloat(border.style.width || '0');
+     const height = parseFloat(border.style.height || '0');
+     const selection = { x: left + 2, y: top + 2, width: width - 4, height: height - 4 };
+     return {
+       visible: getComputedStyle(el).display !== 'none',
+       pointerEvents: getComputedStyle(el).pointerEvents,
+       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+       canvas: canvas ? { width: canvas.width, height: canvas.height } : { width: 0, height: 0 },
+       dpr: window.devicePixelRatio || 1,
+       viewport: { width: window.innerWidth, height: window.innerHeight },
+       selection,
+       overlapsSelection: rect.x < selection.x + selection.width && rect.x + rect.width > selection.x &&
+         rect.y < selection.y + selection.height && rect.y + rect.height > selection.y,
+     };`,
+  )
+  const biggerSide = preview
+    ? Math.max(
+        preview.viewport.width - (preview.selection.x + preview.selection.width),
+        preview.selection.x,
+      )
+    : 0
+  check(
+    '采集过程中显示实时预览，且严格位于选区外',
+    Boolean(preview && preview.visible && preview.pointerEvents === 'none' && !preview.overlapsSelection),
+    preview,
+  )
+  check(
+    '实时预览为等比缩略图（宽度不超过 180 DIP 或可用空间）',
+    Boolean(
+      preview &&
+        preview.canvas.width > 0 &&
+        preview.canvas.width <= Math.round(Math.min(180, Math.max(60, biggerSide)) * preview.dpr) &&
+        preview.rect.height <= preview.viewport.height * 0.6 + 1,
+    ),
+    preview ? { canvas: preview.canvas, dpr: preview.dpr, rect: preview.rect, viewport: preview.viewport } : null,
+  )
 
   const before = outcomes.length
-  const clicked = await clickToolbarButton(wc, '确定')
-  await sleep(900)
+  const finishClicked = await evalJson<boolean>(
+    wc,
+    `const button = document.querySelector('[data-snip-long="longshot-finish"]');
+     if (!button) return false;
+     button.click();
+     return true;`,
+  )
+  const deadline = Date.now() + 6000
+  let done = false
+  while (Date.now() < deadline) {
+    done = await evalJson<boolean>(
+      wc,
+      `return Boolean(document.querySelector('[data-snip-long="longshot-save"]'))`,
+    )
+    if (done) break
+    await sleep(200)
+  }
   const copied = outcomes.slice(before).find((outcome) => outcome.kind === 'copied')
   const expected = copied ? copied.selectionHeight * scaleFactor : 0
   check(
-    '长图「确定」拼接后复制（静止画面去重，不翻倍）',
-    clicked && Boolean(copied) && Math.abs((copied?.height ?? 0) - expected) <= 2,
-    { clicked, copied: copied ?? null, expected, scaleFactor },
+    '「完成」立即拼接并复制（静止画面不翻倍）',
+    finishClicked && done && Boolean(copied) && Math.abs((copied?.height ?? 0) - expected) <= 2,
+    { finishClicked, done, copied: copied ?? null, expected, scaleFactor },
   )
-  check('长图结束后遮罩关闭', findOverlayWindow() === undefined, {
+  const doneButton = await compareLongHudButton(wc, 'longshot-save', 'save')
+  check('长图完成态按钮复用工具栏样式', Boolean(doneButton?.match), doneButton)
+  check('完成后剪贴板拿到拼接图', !clipboard.readImage().isEmpty(), {
+    size: clipboard.readImage().getSize(),
+  })
+
+  const longImage = clipboard.readImage()
+  const longSize = longImage.getSize()
+  const compareHeight = normalSize.height
+  const sizeMatches =
+    normalSize.width > 0 &&
+    longSize.width === normalSize.width &&
+    longSize.height >= compareHeight
+  const pixelStats = sizeMatches
+    ? compareBitmaps(
+        normalBitmap.subarray(0, normalSize.width * compareHeight * 4),
+        longImage.toBitmap().subarray(0, normalSize.width * compareHeight * 4),
+      )
+    : null
+  check(
+    '长图单帧像素与普通截图一致（同 DPI / 同通道 / 无额外重采样）',
+    Boolean(sizeMatches && pixelStats && pixelStats.mean <= 3 && pixelStats.ratioSame >= 0.95),
+    { normalSize, longSize, pixelStats },
+  )
+
+  const ocrClicked = await evalJson<boolean>(
+    wc,
+    `const button = document.querySelector('[data-snip-long="longshot-ocr"]');
+     if (!button) return false;
+     button.click();
+     return true;`,
+  )
+  await sleep(600)
+  const sidebarOpen = await evalJson<boolean>(
+    wc,
+    `const bar = document.getElementById('snip-ocr-sidebar');
+     return Boolean(bar && bar.classList.contains('show'))`,
+  )
+  check('长图完成后可 OCR（侧栏正常打开）', ocrClicked && sidebarOpen, { ocrClicked, sidebarOpen })
+
+  const dir = join(app.getPath('temp'), 'snip-selftest-long')
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const target = join(dir, 'long.png')
+  const slot = dialog as unknown as SaveDialogSlot
+  const original = slot.showSaveDialog
+  slot.showSaveDialog = async () => ({ canceled: false, filePath: target })
+  try {
+    const savedClicked = await evalJson<boolean>(
+      wc,
+      `const button = document.querySelector('[data-snip-long="longshot-save"]');
+       if (!button) return false;
+       button.click();
+       return true;`,
+    )
+    await sleep(900)
+    const exists = existsSync(target)
+    const size = exists ? nativeImage.createFromPath(target).getSize() : null
+    check(
+      '长图完成后可另存为（写出拼接文件）',
+      savedClicked && exists && size !== null && size.height === copied?.height,
+      { target, size, expectedHeight: copied?.height ?? null },
+    )
+  } finally {
+    slot.showSaveDialog = original
+    rmSync(dir, { recursive: true, force: true })
+  }
+
+  const closed = await evalJson<boolean>(
+    wc,
+    `const button = document.querySelector('[data-snip-long="longshot-close"]');
+     if (!button) return false;
+     button.click();
+     return true;`,
+  )
+  await sleep(700)
+  check('关闭长图后遮罩收起', closed && findOverlayWindow() === undefined, {
+    closed,
     overlay: Boolean(findOverlayWindow()),
   })
+  if (closed) {
+    await startAndDrag(wc)
+    const restored = await evalJson<{ visible: boolean }>(
+      wc,
+      `const image = document.querySelector('.screenshots-canvas-image');
+       if (!image) return { visible: false };
+       const s = getComputedStyle(image);
+       return { visible: s.display !== 'none' && s.visibility !== 'hidden' && Number(s.opacity) > 0 };`,
+    )
+    check('退出长图后再开普通截图，选区内容恢复可见', restored.visible, restored)
+    await screenshotService.stopCapture()
+    await sleep(300)
+  }
   if (findOverlayWindow()) {
-    await clickToolbarButton(wc, '取消')
-    await sleep(400)
+    await screenshotService.stopCapture()
+    await sleep(300)
   }
 }
 
@@ -1321,6 +1690,26 @@ export async function runSelftest(): Promise<void> {
       stack: error instanceof Error ? error.stack : null,
     })
   }
+
+  const history = await listPinHistory()
+  const sources = new Set(history.map((item) => item.source))
+  check(
+    '截图历史覆盖复制/另存/贴图/长图四种来源',
+    ['copy', 'save', 'pin', 'longshot'].every((source) => sources.has(source as never)),
+    { total: history.length, sources: [...sources] },
+  )
+  check('截图历史沿用 50 条上限', history.length <= 50, { total: history.length })
+  let storedItems: number | null = null
+  try {
+    const raw = JSON.parse(readFileSync(join(pinHistoryDir(), 'history.json'), 'utf8')) as { items?: unknown[] }
+    storedItems = Array.isArray(raw.items) ? raw.items.length : null
+  } catch {
+    storedItems = null
+  }
+  check('截图历史索引已落盘（重启可恢复）', storedItems === history.length, {
+    stored: storedItems,
+    listed: history.length,
+  })
 
   screenshotService.dispose()
   console.log(failures === 0 ? '[selftest] ALL PASS' : `[selftest] ${failures} FAILED`)

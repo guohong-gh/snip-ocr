@@ -31,6 +31,10 @@ const api: SnipApi = {
   clearPinHistory: () => ipcRenderer.invoke(IPC.pinHistoryClear) as Promise<PinHistoryItem[]>,
   pinFromHistory: (id: string) =>
     ipcRenderer.invoke(IPC.pinHistoryPin, id) as Promise<SetHotkeyResult>,
+  copyFromHistory: (id: string) =>
+    ipcRenderer.invoke(IPC.pinHistoryCopy, id) as Promise<SetHotkeyResult>,
+  saveFromHistory: (id: string) =>
+    ipcRenderer.invoke(IPC.pinHistorySave, id) as Promise<SetHotkeyResult>,
   windowAction: (action: HomeWindowAction) => ipcRenderer.send(IPC.homeWindowAction, action),
   quit: () => ipcRenderer.send(IPC.quitApp),
   ready: () => ipcRenderer.send(IPC.homeReady),

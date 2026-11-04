@@ -5,6 +5,7 @@ import type { IconTheme } from '@shared/ipc'
 export const OVERLAY_ACTION_PREFIX = '__SNIP_ACTION__'
 export const OVERLAY_COPY_PREFIX = '__SNIP_COPY__'
 
+export const OVERLAY_HUD_RECT_PREFIX = '__SNIP_HUD_RECT__'
 const TOOL_ORDER: ToolKey[] = ['ocr', 'pin', 'save', 'longshot', 'cancel', 'confirm']
 
 export function overlayIcons(theme: IconTheme, customIconUrl: string | null): Record<ToolKey, string> {
@@ -30,13 +31,16 @@ const OVERLAY_CSS = `
   opacity: 0 !important;
   pointer-events: none !important;
 }
-#snip-toolbar {
+#snip-toolbar,
+#snip-long-hud {
   --snip-strip-ink: #181a17;
   --snip-strip-muted: #181a17;
   --snip-strip-hover: #eceded;
   --snip-signal: #2456b8;
   --snip-signal-ink: #ffffff;
   --snip-proof: #c33d26;
+}
+#snip-toolbar {
   position: fixed;
   z-index: 2147483002;
   display: none;
@@ -242,8 +246,12 @@ body.snip-live-drag .screenshots-canvas {
     opacity 160ms ease-out,
     transform 160ms ease-out;
   user-select: text;
-  z-index: 2147482999;
+  /* 高于选区边框与预览窗，避免被遮住 */
+  z-index: 2147483006;
   font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif;
+}
+#snip-ocr-sidebar.dragging {
+  transition: none;
 }
 #snip-ocr-sidebar.show {
   opacity: 1;
@@ -258,6 +266,12 @@ body.snip-live-drag .screenshots-canvas {
   padding: 11px 12px 10px;
   border-bottom: 1px solid var(--snip-rule);
   background: var(--snip-plate);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+#snip-ocr-sidebar.dragging .snip-sidebar-head {
+  cursor: grabbing;
 }
 .snip-sidebar-title {
   color: var(--snip-ink);
@@ -394,6 +408,83 @@ body.snip-live-drag .screenshots-canvas {
     transition-duration: 0.01ms !important;
   }
 }
+body.snip-long,
+body.snip-long #root {
+  background: transparent !important;
+}
+body.snip-long .screenshots-background-image,
+body.snip-long .screenshots-background-mask,
+body.snip-long #snip-toolbar,
+body.snip-long #snip-size-badge,
+body.snip-long #snip-live-frame,
+body.snip-long .screenshots-operations,
+body.snip-long [class^='screenshots-canvas-border'],
+body.snip-long [class^='screenshots-canvas-point'] {
+  display: none !important;
+}
+body.snip-long .screenshots-canvas {
+  border: 0 !important;
+  background: transparent !important;
+}
+/* 长图跟随态：选区内部透出真实屏幕，冻结图只保留在 DOM 里作为数据源 */
+body.snip-long .screenshots-canvas-image {
+  visibility: hidden !important;
+}
+#snip-long-border {
+  position: fixed;
+  z-index: 2147483004;
+  display: none;
+  box-sizing: border-box;
+  border: 2px solid #4f7cff;
+  border-radius: 2px;
+  pointer-events: none;
+}
+#snip-long-preview {
+  position: fixed;
+  z-index: 2147483003;
+  display: none;
+  box-sizing: border-box;
+  padding: 4px;
+  border: 1px solid #d8dad2;
+  border-radius: 3px;
+  background: #ffffff;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+}
+#snip-long-preview canvas {
+  display: block;
+  pointer-events: none;
+}
+#snip-long-hud {
+  position: fixed;
+  z-index: 2147483005;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 4px 4px 10px;
+  border: 1px solid #d8dad2;
+  border-radius: 3px;
+  background: #ffffff;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+  color: #181a17;
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif;
+  font-size: 11px;
+  white-space: nowrap;
+}
+#snip-long-hud .snip-hud-text {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+#snip-long-hud .snip-hud-hint {
+  color: #8a8f86;
+  font-size: 10px;
+}
+#snip-long-hud .snip-hud-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #2f6b4f;
+}
 `
 
 function buildScript(icons: Record<ToolKey, string>): string {
@@ -405,6 +496,7 @@ function buildScript(icons: Record<ToolKey, string>): string {
   const LABELS = ${JSON.stringify(TOOL_LABELS)};
   const ACTION_PREFIX = ${JSON.stringify(OVERLAY_ACTION_PREFIX)};
   const COPY_PREFIX = ${JSON.stringify(OVERLAY_COPY_PREFIX)};
+  const HUD_PREFIX = ${JSON.stringify(OVERLAY_HUD_RECT_PREFIX)};
 
   if (!window.__snipOverlayInstalled) {
     window.__snipOverlayInstalled = true;
@@ -426,6 +518,7 @@ function buildScript(icons: Record<ToolKey, string>): string {
       });
       window.screenshots.on('capture', () => {
         hideSidebar();
+        resetSidebarDrag();
         window.__snipCaptureSeq = (window.__snipCaptureSeq || 0) + 1;
         setLongShotCount(0);
       });
@@ -453,10 +546,17 @@ function buildScript(icons: Record<ToolKey, string>): string {
     textarea.addEventListener('input', updateCount);
     copyBtn.addEventListener('click', copySidebarText);
     bar.querySelector('.snip-sidebar-close').addEventListener('click', hideSidebar);
+    // 只在标题条空白处起拖，textarea/复制/关闭的指针事件不受影响
+    bar.querySelector('.snip-sidebar-head').addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      if (event.target.closest('.snip-sidebar-close')) return;
+      startSidebarDrag(event);
+    });
   }
 
   let lastRequestId = 0;
   let sidebarStatus = 'loading';
+  let sidebarDragged = false;
   let ocrBusy = false;
   let discardOcr = false;
   let ocrTimer = 0;
@@ -491,10 +591,58 @@ function buildScript(icons: Record<ToolKey, string>): string {
     if (bar) bar.classList.remove('show');
     if (ocrBusy) discardOcr = true;
     setOcrBusy(false);
+    scheduleReportRects();
+  }
+  function resetSidebarDrag() {
+    sidebarDragged = false;
+    const bar = sidebar();
+    if (!bar) return;
+    bar.classList.remove('dragged', 'dragging');
+    bar.style.left = '';
+    bar.style.top = '';
+    bar.style.right = '';
+    bar.style.transform = '';
+  }
+  function startSidebarDrag(event) {
+    const bar = sidebar();
+    if (!bar) return;
+    const rect = bar.getBoundingClientRect();
+    const offsetX = event.clientX - rect.left;
+    const offsetY = event.clientY - rect.top;
+    sidebarDragged = true;
+    bar.classList.add('dragging', 'dragged');
+    const onMove = (moveEvent) => {
+      const maxLeft = Math.max(0, window.innerWidth - bar.offsetWidth);
+      const maxTop = Math.max(0, window.innerHeight - bar.offsetHeight);
+      const left = Math.min(maxLeft, Math.max(0, moveEvent.clientX - offsetX));
+      const top = Math.min(maxTop, Math.max(0, moveEvent.clientY - offsetY));
+      bar.style.left = Math.round(left) + 'px';
+      bar.style.top = Math.round(top) + 'px';
+      bar.style.right = 'auto';
+      bar.style.transform = 'none';
+      scheduleReportRects();
+    };
+    const onUp = () => {
+      bar.classList.remove('dragging');
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      scheduleReportRects();
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    onMove(event);
+    event.preventDefault();
   }
   function positionSidebar() {
     const bar = sidebar();
     if (!bar) return;
+    // 用户在本轮拖过就不再自动挪动
+    if (sidebarDragged) {
+      scheduleReportRects();
+      return;
+    }
     const canvas = document.querySelector('.screenshots-canvas');
     let side = 'right';
     if (canvas) {
@@ -503,13 +651,11 @@ function buildScript(icons: Record<ToolKey, string>): string {
     }
     const width = Math.min(340, Math.round(window.innerWidth * 0.4));
     bar.style.width = width + 'px';
-    if (side === 'left') {
-      bar.style.left = '24px';
-      bar.style.right = 'auto';
-    } else {
-      bar.style.right = '24px';
-      bar.style.left = 'auto';
-    }
+    bar.style.left = side === 'left' ? '24px' : 'auto';
+    bar.style.right = side === 'left' ? 'auto' : '24px';
+    bar.style.top = '';
+    bar.style.transform = '';
+    scheduleReportRects();
   }
   function updateCount() {
     const bar = sidebar();
@@ -826,6 +972,286 @@ function buildScript(icons: Record<ToolKey, string>): string {
     if (panel && panel.classList.contains('show')) positionSidebar();
   }
 
+  let longBounds = null;
+  let longState = null;
+  let longBorder = null;
+  let longHud = null;
+  let longPreview = null;
+  let longPreviewCanvas = null;
+  let longPreviewRows = 0;
+  let longFrameCanvas = null;
+  const PREVIEW_DIP = 180;
+  const PREVIEW_GAP = 10;
+  let rectRaf = 0;
+
+  function scheduleReportRects() {
+    if (rectRaf) return;
+    rectRaf = requestAnimationFrame(() => {
+      rectRaf = 0;
+      reportRects();
+    });
+  }
+  function reportRects() {
+    const toRect = (element) => {
+      if (!element || element.style.display === 'none') return null;
+      const rect = element.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) return null;
+      return {
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height)
+      };
+    };
+    const bar = sidebar();
+    console.log(HUD_PREFIX + JSON.stringify({
+      hud: toRect(longHud),
+      sidebar: bar && bar.classList.contains('show') ? toRect(bar) : null
+    }));
+  }
+  function ensureLongNodes() {
+    if (!longBorder) {
+      longBorder = document.createElement('div');
+      longBorder.id = 'snip-long-border';
+      document.body.appendChild(longBorder);
+    }
+    if (!longHud) {
+      longHud = document.createElement('div');
+      longHud.id = 'snip-long-hud';
+      longHud.addEventListener('click', (event) => {
+        const target = event.target;
+        const button = target instanceof Element ? target.closest('[data-snip-long]') : null;
+        if (!button) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const action = button.getAttribute('data-snip-long');
+        if (action === 'longshot-ocr') {
+          if (ocrBusy) return;
+          discardOcr = false;
+          setOcrBusy(true);
+          showSidebar('OCR 识别结果', '正在识别长截图…', 'loading');
+        }
+        console.log(ACTION_PREFIX + JSON.stringify({ action: action, requestId: Date.now() }));
+      });
+      document.body.appendChild(longHud);
+    }
+  }
+  function ensureLongPreview() {
+    if (!longPreview) {
+      longPreview = document.createElement('div');
+      longPreview.id = 'snip-long-preview';
+      longPreviewCanvas = document.createElement('canvas');
+      longPreview.appendChild(longPreviewCanvas);
+      document.body.appendChild(longPreview);
+    }
+    return longPreview;
+  }
+  function previewOverlap(rect) {
+    const b = longBounds;
+    if (!b) return true;
+    return rect.x < b.x + b.width && rect.x + rect.width > b.x && rect.y < b.y + b.height && rect.y + rect.height > b.y;
+  }
+  function positionLongPreview() {
+    if (!longPreview || !longPreviewCanvas || !longPreviewCanvas.width || longPreviewRows < 1 || !longBounds) {
+      if (longPreview) longPreview.style.display = 'none';
+      return;
+    }
+    const viewW = window.innerWidth;
+    const viewH = window.innerHeight;
+    const maxHeight = Math.floor(viewH * 0.6);
+    const ratio = longPreviewCanvas.height / longPreviewCanvas.width;
+    const b = longBounds;
+    const gap = PREVIEW_GAP;
+    const candidates = [
+      { side: 'right', x: b.x + b.width + gap, y: b.y, availW: viewW - (b.x + b.width) - gap * 2, availH: viewH },
+      { side: 'left', x: b.x - gap, y: b.y, availW: b.x - gap * 2, availH: viewH },
+      { side: 'bottom', x: b.x, y: b.y + b.height + gap, availW: viewW, availH: viewH - (b.y + b.height) - gap * 2 },
+      { side: 'top', x: b.x, y: b.y - gap, availW: viewW, availH: b.y - gap * 2 }
+    ];
+    let chosen = null;
+    for (const candidate of candidates) {
+      if (candidate.availW < 80 || candidate.availH < 60) continue;
+      let width = Math.min(PREVIEW_DIP, candidate.availW);
+      let height = Math.min(maxHeight, Math.round(width * ratio), candidate.availH);
+      width = Math.round(height / ratio);
+      if (width < 80) continue;
+      let x = candidate.side === 'right' ? candidate.x : candidate.side === 'left' ? b.x - gap - width : b.x;
+      let y = candidate.side === 'bottom' ? candidate.y : candidate.side === 'top' ? b.y - gap - height : b.y;
+      x = Math.max(8, Math.min(Math.round(x), viewW - width - 8));
+      y = Math.max(8, Math.min(Math.round(y), viewH - height - 8));
+      const rect = { x: x, y: y, width: width, height: height };
+      if (!previewOverlap(rect)) {
+        chosen = rect;
+        break;
+      }
+    }
+    if (!chosen) {
+      // 选区几乎铺满屏幕：取空间最大的一侧缩小到刚好不压选区
+      const width = Math.min(PREVIEW_DIP, Math.max(60, Math.max(b.x - gap * 2, viewW - (b.x + b.width) - gap * 2)));
+      const height = Math.max(40, Math.min(maxHeight, Math.round(width * ratio)));
+      chosen = { x: b.x + b.width + gap, y: Math.max(8, Math.min(b.y, viewH - height - 8)), width: width, height: height };
+    }
+    longPreview.style.display = 'block';
+    longPreview.style.left = chosen.x + 'px';
+    longPreview.style.top = chosen.y + 'px';
+    longPreviewCanvas.style.width = chosen.width + 'px';
+    longPreviewCanvas.style.height = chosen.height + 'px';
+  }
+  window.__snipLongFrame = (payload) => new Promise((resolve) => {
+    if (!payload || typeof payload !== 'object' || typeof payload.dataUrl !== 'string') {
+      resolve(null);
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      const bounds = payload.bounds || {};
+      const crop = payload.crop || {};
+      const dpr = window.devicePixelRatio || 1;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(bounds.width * dpr));
+      canvas.height = Math.max(1, Math.round(bounds.height * dpr));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(null);
+        return;
+      }
+      const rx = img.naturalWidth / (crop.width || 1);
+      const ry = img.naturalHeight / (crop.height || 1);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'low';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, bounds.width, bounds.height);
+      ctx.drawImage(
+        img,
+        (bounds.x - crop.x) * rx,
+        (bounds.y - crop.y) * ry,
+        bounds.width * rx,
+        bounds.height * ry,
+        0,
+        0,
+        bounds.width,
+        bounds.height
+      );
+      longFrameCanvas = canvas;
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => resolve(null);
+    img.src = payload.dataUrl;
+  });
+  window.__snipLongAppend = (startRow) => {
+    const frame = longFrameCanvas;
+    if (!frame || !frame.width || !frame.height) return null;
+    const dpr = window.devicePixelRatio || 1;
+    const targetW = Math.max(1, Math.round(PREVIEW_DIP * dpr));
+    const scale = targetW / frame.width;
+    const skip = Math.max(0, Math.min(frame.height, Math.round(Number(startRow) || 0)));
+    const rows = frame.height - skip;
+    if (rows < 1) return { rows: longPreviewRows, width: 0, height: 0 };
+    ensureLongPreview();
+    let previous = null;
+    if (longPreviewCanvas.width && longPreviewCanvas.height) {
+      previous = document.createElement('canvas');
+      previous.width = longPreviewCanvas.width;
+      previous.height = longPreviewCanvas.height;
+      const prevCtx = previous.getContext('2d');
+      if (prevCtx) prevCtx.drawImage(longPreviewCanvas, 0, 0);
+    }
+    const baseRows = longPreviewRows;
+    longPreviewRows += rows;
+    longPreviewCanvas.width = targetW;
+    longPreviewCanvas.height = Math.max(1, Math.round(longPreviewRows * scale));
+    const ctx = longPreviewCanvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    if (previous) ctx.drawImage(previous, 0, 0);
+    ctx.drawImage(frame, 0, skip, frame.width, rows, 0, Math.round(baseRows * scale), targetW, Math.round(rows * scale));
+    positionLongPreview();
+    return { rows: longPreviewRows, width: longPreviewCanvas.width, height: longPreviewCanvas.height };
+  };
+  function longHudButton(tool, action, label) {
+    return '<button type="button" class="snip-tool-btn" data-snip-tool="' + tool + '" data-snip-long="' + action + '">'
+      + '<span class="snip-tool-icon">' + (ICONS[tool] || '') + '</span>'
+      + '<span class="snip-tool-label">' + label + '</span>'
+      + '</button>';
+  }
+  function renderLongHud() {
+    ensureLongNodes();
+    const bounds = longBounds || { x: 0, y: 0, width: 0, height: 0 };
+    longBorder.style.display = 'block';
+    longBorder.style.left = Math.round(bounds.x - 2) + 'px';
+    longBorder.style.top = Math.round(bounds.y - 2) + 'px';
+    longBorder.style.width = Math.round(bounds.width + 4) + 'px';
+    longBorder.style.height = Math.round(bounds.height + 4) + 'px';
+    const state = longState || { phase: 'follow', count: 1 };
+    let html;
+    if (state.phase === 'done') {
+      const size = (state.width || 0) + ' × ' + (state.height || 0);
+      html = '<span class="snip-hud-text">已完成 · ' + size + (state.segments > 1 ? ' · ' + state.segments + ' 段' : '') + '</span>'
+        + longHudButton('confirm', 'longshot-copy', '复制')
+        + longHudButton('save', 'longshot-save', '另存')
+        + longHudButton('ocr', 'longshot-ocr', 'OCR')
+        + longHudButton('cancel', 'longshot-close', '关闭');
+    } else {
+      const hint = state.scrolling ? '采集中…' : '滚动页面，到底自动结束';
+      const height = state.height ? ' · ' + state.height + ' px' : '';
+      html = '<span class="snip-hud-dot"></span>'
+        + '<span class="snip-hud-text">长截图 · 第 ' + (state.count || 1) + ' 段' + height + '</span>'
+        + '<span class="snip-hud-hint">' + hint + '</span>'
+        + longHudButton('confirm', 'longshot-finish', '完成')
+        + longHudButton('cancel', 'longshot-cancel', '取消');
+    }
+    longHud.innerHTML = html;
+    longHud.style.display = 'flex';
+    const hudWidth = longHud.offsetWidth;
+    const hudHeight = longHud.offsetHeight;
+    let left = Math.round(bounds.x + bounds.width - hudWidth);
+    let top = Math.round(bounds.y - hudHeight - 10);
+    if (top < 8) top = Math.round(bounds.y + bounds.height + 10);
+    // HUD 变高后可能两端都放不下，最后统一夹回视口内，避免跑出屏幕
+    top = Math.max(8, Math.min(top, window.innerHeight - hudHeight - 8));
+    left = Math.max(8, Math.min(left, window.innerWidth - hudWidth - 8));
+    longHud.style.left = left + 'px';
+    longHud.style.top = top + 'px';
+    positionLongPreview();
+    scheduleReportRects();
+  }
+
+  window.__snipLongStart = (bounds) => {
+    if (!bounds || typeof bounds !== 'object') return;
+    longBounds = bounds;
+    longState = { phase: 'follow', count: 1, scrolling: false };
+    longPreviewRows = 0;
+    longFrameCanvas = null;
+    if (longPreviewCanvas) {
+      longPreviewCanvas.width = 0;
+      longPreviewCanvas.height = 0;
+    }
+    if (longPreview) longPreview.style.display = 'none';
+    hideSidebar();
+    document.body.classList.add('snip-long');
+    renderLongHud();
+  };
+  window.__snipLongState = (state) => {
+    if (!state || typeof state !== 'object') return;
+    longState = Object.assign({}, longState || {}, state);
+    renderLongHud();
+  };
+  window.__snipLongEnd = () => {
+    longBounds = null;
+    longState = null;
+    longPreviewRows = 0;
+    longFrameCanvas = null;
+    document.body.classList.remove('snip-long');
+    if (longBorder) longBorder.style.display = 'none';
+    if (longHud) longHud.style.display = 'none';
+    if (longPreview) longPreview.style.display = 'none';
+    if (longPreviewCanvas) {
+      longPreviewCanvas.width = 0;
+      longPreviewCanvas.height = 0;
+    }
+    scheduleReportRects();
+  };
+
   window.__snipSetTheme = (icons) => {
     if (!icons || typeof icons !== 'object') return;
     Object.keys(icons).forEach((key) => { ICONS[key] = icons[key]; });
@@ -860,28 +1286,6 @@ function buildScript(icons: Record<ToolKey, string>): string {
     ctx.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh);
     return output.toDataURL('image/png');
   };
-  // 按固定 DIP 矩形裁切：长截图各段都用同一矩形，保证像素尺寸完全一致
-  window.__snipCropRect = (x, y, width, height) => {
-    const image = document.querySelector('.screenshots-background-image');
-    if (!image) return null;
-    const bg = image.getBoundingClientRect();
-    if (bg.width < 1 || bg.height < 1) return null;
-    const scaleX = image.naturalWidth / bg.width;
-    const scaleY = image.naturalHeight / bg.height;
-    const sx = Math.max(0, Math.round((x - bg.left) * scaleX));
-    const sy = Math.max(0, Math.round((y - bg.top) * scaleY));
-    const sw = Math.min(image.naturalWidth - sx, Math.round(width * scaleX));
-    const sh = Math.min(image.naturalHeight - sy, Math.round(height * scaleY));
-    if (sw < 1 || sh < 1) return null;
-    const output = document.createElement('canvas');
-    output.width = sw;
-    output.height = sh;
-    const ctx = output.getContext('2d');
-    if (!ctx) return null;
-    ctx.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh);
-    return output.toDataURL('image/png');
-  };
-
   const schedule = () => {
     if (window.__snipOverlayRaf) return;
     window.__snipOverlayRaf = requestAnimationFrame(() => {
@@ -994,20 +1398,10 @@ export async function hideOverlaySidebar(contents: WebContents): Promise<void> {
   await contents.executeJavaScript('window.__snipHideSidebar?.()')
 }
 
+/** 读取遮罩内当前选区的裁剪 PNG，供 OCR / 贴图使用 */
 export async function captureOverlaySelection(contents: WebContents): Promise<Buffer | null> {
   const dataUrl = (await contents.executeJavaScript(
     'window.__snipCropSelection ? window.__snipCropSelection() : null',
-  )) as unknown
-  return decodePngDataUrl(dataUrl)
-}
-
-/** 按固定 DIP 矩形裁切，长截图各段共用同一矩形 */
-export async function captureOverlayRect(
-  contents: WebContents,
-  bounds: { x: number; y: number; width: number; height: number },
-): Promise<Buffer | null> {
-  const dataUrl = (await contents.executeJavaScript(
-    `window.__snipCropRect ? window.__snipCropRect(${bounds.x}, ${bounds.y}, ${bounds.width}, ${bounds.height}) : null`,
   )) as unknown
   return decodePngDataUrl(dataUrl)
 }

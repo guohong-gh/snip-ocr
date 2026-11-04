@@ -28,6 +28,8 @@ export const IPC = {
   pinHistoryDelete: 'snip:pin-history-delete',
   pinHistoryClear: 'snip:pin-history-clear',
   pinHistoryPin: 'snip:pin-history-pin',
+  pinHistoryCopy: 'snip:pin-history-copy',
+  pinHistorySave: 'snip:pin-history-save',
 } as const
 
 export const DEFAULT_HOTKEY = 'Alt+A'
@@ -88,6 +90,10 @@ export interface PinMeta {
   resizable: boolean
 }
 
+/** 截图历史来源：复制 / 另存 / 贴图 / 长图 */
+export const HISTORY_SOURCES = ['copy', 'save', 'pin', 'longshot'] as const
+export type HistorySource = (typeof HISTORY_SOURCES)[number]
+
 export interface PinHistoryItem {
   id: string
   /** 创建时间（毫秒时间戳） */
@@ -97,6 +103,8 @@ export interface PinHistoryItem {
   imageHeight: number
   /** 缩略图 data URL，仅用于列表展示 */
   thumbUrl: string
+  /** 本次截图走的是哪个出口 */
+  source: HistorySource
 }
 
 export interface PinApi {
@@ -128,6 +136,8 @@ export interface SnipApi {
   deletePinHistory(id: string): Promise<PinHistoryItem[]>
   clearPinHistory(): Promise<PinHistoryItem[]>
   pinFromHistory(id: string): Promise<SetHotkeyResult>
+  copyFromHistory(id: string): Promise<SetHotkeyResult>
+  saveFromHistory(id: string): Promise<SetHotkeyResult>
   windowAction(action: HomeWindowAction): void
   quit(): void
   ready(): void
