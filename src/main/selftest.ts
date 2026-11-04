@@ -300,6 +300,7 @@ async function testHomeWindow(shotPath: string): Promise<void> {
     gear: boolean
     statusText: string
     footerText: string
+    closeTip: string
     dotBox: { width: number; height: number } | null
     state: {
       hotkey: string
@@ -320,6 +321,7 @@ async function testHomeWindow(shotPath: string): Promise<void> {
        gear: Boolean(document.querySelector('button[aria-label="设置"]')),
        statusText: document.querySelector('.home-status')?.textContent || '',
        footerText: document.querySelector('.app-foot')?.textContent || '',
+       closeTip: dot ? (dot.getAttribute('data-tip') || dot.getAttribute('title') || '') : '',
        dotBox: dotRect ? { width: dotRect.width, height: dotRect.height } : null,
        state: state ? {
          hotkey: state.hotkey, pinHotkey: state.pinHotkey,
@@ -330,9 +332,18 @@ async function testHomeWindow(shotPath: string): Promise<void> {
   check('主窗加载首页', home.title === HOME_TITLE && home.heading.includes('准备好'), home)
   check('preload 与状态可用', home.bridge && home.state !== null && home.captureButton && home.gear, home.state)
   check(
-    '首页显示贴图状态与托盘提示',
-    home.statusText.includes('贴图') && home.statusText.includes('确定') && home.footerText.includes('托盘'),
-    { statusText: home.statusText, footerText: home.footerText },
+    '首页显示贴图状态，关闭入口说明托盘常驻',
+    home.statusText.includes('贴图') && home.footerText.includes('确定') && home.closeTip.includes('托盘'),
+    { statusText: home.statusText, footerText: home.footerText, closeTip: home.closeTip },
+  )
+  check(
+    '主窗可缩放且限制在 480×400 – 1200×900',
+    win.isResizable() &&
+      win.getMinimumSize()[0] <= 480 &&
+      win.getMinimumSize()[1] <= 400 &&
+      win.getMaximumSize()[0] >= 1200 &&
+      win.getMaximumSize()[1] >= 900,
+    { min: win.getMinimumSize(), max: win.getMaximumSize() },
   )
   check(
     '窗口红点点击热区足够大',

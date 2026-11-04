@@ -8,4 +8,5 @@ data/
 .archify/
 .impeccable/
 .trae-html-share-packages/
+.design-preview/
 .DS_Store

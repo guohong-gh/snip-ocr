@@ -56,15 +56,6 @@ function SettingsIcon() {
   )
 }
 
-function PowerIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <path d="M12 3v9" />
-      <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
-    </svg>
-  )
-}
-
 function MinimizeIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -232,7 +223,6 @@ export default function App() {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [history, setHistory] = useState<PinHistoryItem[] | null>(null)
   const [historyVersion, setHistoryVersion] = useState(0)
-  const [menuOpen, setMenuOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
   const [updateStatus, setUpdateStatus] = useState('当前已是最新版本')
@@ -290,20 +280,6 @@ export default function App() {
     loadHistory()
   }, [historyOpen, historyVersion, loadHistory])
 
-  useEffect(() => {
-    if (!menuOpen) return
-    const close = (): void => setMenuOpen(false)
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') close()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    window.addEventListener('blur', close)
-    return () => {
-      window.removeEventListener('keydown', onKeyDown)
-      window.removeEventListener('blur', close)
-    }
-  }, [menuOpen])
-
   const platform = state?.platform ?? 'win32'
   const hotkey = state?.hotkey ?? DEFAULT_HOTKEY
   const pinHotkey = state?.pinHotkey ?? DEFAULT_PIN_HOTKEY
@@ -359,7 +335,10 @@ export default function App() {
   return (
     <div className="app-window">
       <header className="titlebar">
-        <div className="brand">
+        <div
+          className="brand"
+          data-tip="本地 OCR · 零联网：截图、识别都在本机完成，不发起任何网络请求。"
+        >
           <span className="brand-mark" aria-hidden="true">
             <BrandMark />
           </span>
@@ -367,6 +346,10 @@ export default function App() {
             snip-ocr <span className="title-version">v{version}</span>
           </div>
         </div>
+        <span className={`status-chip${state?.hotkeyError || state?.pinHotkeyError ? ' error' : ''}`}>
+          <span className="status-dot" />
+          {state?.hotkeyError || state?.pinHotkeyError ? '快捷键冲突' : '就绪'}
+        </span>
         <div className="titlebar-actions">
           <button
             type="button"
@@ -380,51 +363,6 @@ export default function App() {
           >
             <SettingsIcon />
           </button>
-          <div className="quit-anchor">
-            <button
-              type="button"
-              className={`icon-btn power-btn${menuOpen ? ' active' : ''}`}
-              aria-label="关闭或退出"
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              title="关闭 / 退出"
-              onClick={() => setMenuOpen((open) => !open)}
-            >
-              <PowerIcon />
-            </button>
-            {menuOpen ? (
-              <>
-                <div
-                  className="menu-backdrop"
-                  role="presentation"
-                  onMouseDown={() => setMenuOpen(false)}
-                />
-                <div className="title-menu" role="menu" aria-label="关闭或退出">
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMenuOpen(false)
-                      window.snip.windowAction('close')
-                    }}
-                  >
-                    隐藏到托盘
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="danger"
-                    onClick={() => {
-                      setMenuOpen(false)
-                      window.snip.quit()
-                    }}
-                  >
-                    退出 snip-ocr
-                  </button>
-                </div>
-              </>
-            ) : null}
-          </div>
           <div className="dots">
             <button
               type="button"
@@ -439,7 +377,7 @@ export default function App() {
               type="button"
               className="dot dot-red"
               aria-label="关闭主窗口"
-              title="关闭到托盘"
+              data-tip="关闭窗口后仍在托盘运行，快捷键随时可用；需要完全退出请用托盘菜单。"
               onClick={() => window.snip.windowAction('close')}
             >
               <CloseIcon />
@@ -447,6 +385,51 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {state?.hotkeyError || state?.pinHotkeyError ? (
+        <div className="banners">
+          {state?.hotkeyError ? (
+            <section className="banner" role="alert">
+              <span className="banner-mark" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M12 3 2.5 20h19z" />
+                  <line x1="12" y1="9" x2="12" y2="14" />
+                  <line x1="12" y1="17" x2="12" y2="17.5" />
+                </svg>
+              </span>
+              <div className="banner-copy">
+                <div className="banner-title">
+                  截图快捷键 <b>{prettyAccelerator(hotkey, platform)}</b> 被其他程序占用
+                </div>
+                <div className="banner-desc">当前无法用快捷键截图，点「立即截图」仍可用。</div>
+              </div>
+              <button type="button" className="banner-action" onClick={() => setTab('hotkeys')}>
+                换个快捷键
+              </button>
+            </section>
+          ) : null}
+          {state?.pinHotkeyError ? (
+            <section className="banner" role="alert">
+              <span className="banner-mark" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M12 3 2.5 20h19z" />
+                  <line x1="12" y1="9" x2="12" y2="14" />
+                  <line x1="12" y1="17" x2="12" y2="17.5" />
+                </svg>
+              </span>
+              <div className="banner-copy">
+                <div className="banner-title">
+                  贴图快捷键 <b>{prettyAccelerator(pinHotkey, platform)}</b> 被其他程序占用
+                </div>
+                <div className="banner-desc">贴最近一张暂时不可用，可在截图历史里手动贴出。</div>
+              </div>
+              <button type="button" className="banner-action" onClick={() => setTab('hotkeys')}>
+                换个快捷键
+              </button>
+            </section>
+          ) : null}
+        </div>
+      ) : null}
 
       <main className={`app-body${tab || historyOpen ? ' settings-mode' : ''}`}>
         {historyOpen ? (
@@ -641,6 +624,15 @@ export default function App() {
                         {checking ? '检查中...' : '检查更新'}
                       </button>
                     </div>
+                    <div className="setting-tail">
+                      <button
+                        type="button"
+                        className="text-btn danger"
+                        onClick={() => window.snip.quit()}
+                      >
+                        退出 snip-ocr
+                      </button>
+                    </div>
                   </div>
                 ) : null}
 
@@ -714,33 +706,47 @@ export default function App() {
               <span className="plate-corner tr" aria-hidden="true" />
               <span className="plate-corner bl" aria-hidden="true" />
               <span className="plate-corner br" aria-hidden="true" />
-              <div className="plate-meta">
-                <span className={`plate-status${state?.hotkeyError ? ' error' : ''}`}>
-                  <span className="status-dot" />
-                  {state?.hotkeyError ? '快捷键冲突' : '就绪'}
-                </span>
-                <span className="plate-local">本地 OCR · 零联网</span>
-              </div>
               <div className="plate-center">
-                <h1>准备好截个图了吗？</h1>
-                <p className="sub">截图 · 贴图 · OCR 文字提取</p>
-                <button
-                  type="button"
-                  className="capture-btn"
-                  onClick={() => window.snip.startCapture()}
-                >
-                  <CaptureIcon />
-                  <span>点击截图</span>
-                  <kbd>{prettyAccelerator(hotkey, platform)}</kbd>
-                </button>
+                <h1>准备好截张图了吗？</h1>
+                <p className="sub">框选即用 · 本地文字识别 · 不联网</p>
 
-                <div className="home-status">
-                  <span className="status-cell">
-                    <span className="status-key">贴图</span>{' '}
-                    <b>{pinCount}</b> 张
+                <div className="action-cluster">
+                  <button
+                    type="button"
+                    className="capture-btn"
+                    onClick={() => window.snip.startCapture()}
+                  >
+                    <CaptureIcon />
+                    <span>立即截图</span>
+                    <span className="hk">{prettyAccelerator(hotkey, platform)}</span>
+                  </button>
+
+                  <div className="right-stack">
+                    <div className="secondary home-actions">
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        disabled={!state?.hasHistory}
+                        title={state?.hasHistory ? '贴出截图历史里最新的一张' : '还没有截图记录，先截一张'}
+                        onClick={() => window.snip.pinLast()}
+                      >
+                        贴最近一张 <span className="hk">{prettyAccelerator(pinHotkey, platform)}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        onClick={() => setHistoryOpen(true)}
+                      >
+                        截图历史
+                      </button>
+                    </div>
+
                     {pinCount > 0 ? (
-                      <>
-                        {' '}
+                      <div className="home-status">
+                        <span className="status-dot" />
+                        <span>
+                          当前贴图 <b>{pinCount}</b> 张
+                        </span>
                         <button
                           type="button"
                           className="link-btn"
@@ -748,35 +754,21 @@ export default function App() {
                         >
                           关闭全部
                         </button>
-                      </>
-                    ) : null}
-                  </span>
-                  <span className="status-cell">
-                    <span className="status-key">确定</span> 复制
-                  </span>
-                  <span className="status-cell">
-                    <span className="status-key">贴图</span>{' '}
-                    {prettyAccelerator(pinHotkey, platform)}
-                  </span>
+                      </div>
+                    ) : (
+                      <div className="home-status empty">
+                        <span className="status-dot muted" />
+                        <span>暂无贴图 · 截图时点「贴图」，图片会悬浮在屏幕上</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                <div className="home-actions">
-                  <button
-                    type="button"
-                    className="ghost-btn"
-                    disabled={!state?.hasHistory}
-                    title={state?.hasHistory ? '贴最近一张截图' : '还没有截图记录，先截一张'}
-                    onClick={() => window.snip.pinLast()}
-                  >
-                    贴最近一张
-                  </button>
-                  <button type="button" className="ghost-btn" onClick={() => setTab('hotkeys')}>
-                    打开设置
-                  </button>
-                  <button type="button" className="ghost-btn" onClick={() => setHistoryOpen(true)}>
-                    截图历史
-                  </button>
-                </div>
+                {state?.hasHistory ? null : (
+                  <p className="empty-hint">
+                    还没有截图记录 — 按 <kbd>{prettyAccelerator(hotkey, platform)}</kbd> 截一张，完成后会自动出现在这里
+                  </p>
+                )}
               </div>
               <span className="plate-ruler" aria-hidden="true" />
             </div>
@@ -784,13 +776,14 @@ export default function App() {
         )}
       </main>
 
-      <footer className="app-foot">
-        <span>
-          {prettyAccelerator(hotkey, platform)} 截图 · {prettyAccelerator(pinHotkey, platform)} 贴图 ·
-          双击复制 · Esc 取消
-        </span>
-        <span>关闭窗口后仍在托盘运行 · 右上角可退出</span>
-      </footer>
+      <div className="foot-zone">
+        <footer className="app-foot" tabIndex={0} aria-label="键盘速查">
+          <span className="mono">
+            {prettyAccelerator(hotkey, platform)} 截图 · 确定 复制 ·{' '}
+            {prettyAccelerator(pinHotkey, platform)} 贴图 · Esc 取消
+          </span>
+        </footer>
+      </div>
 
       {toast ? (
         <div className="toast" role="status">

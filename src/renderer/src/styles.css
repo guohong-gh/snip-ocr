@@ -141,10 +141,35 @@ textarea:focus-visible,
 }
 
 .brand {
+  position: relative;
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 9px;
+}
+
+/* 离线说明只在品牌区悬停时出现，不再常驻 */
+.brand[data-tip]:hover::after,
+.brand[data-tip]:focus-within::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: 32px;
+  left: 0;
+  z-index: 60;
+  width: 252px;
+  padding: 7px 9px;
+  border: 1px solid var(--rule-2);
+  border-radius: 2px;
+  background: var(--plate);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
+  color: var(--ink-2);
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
 }
 
 .brand-mark {
@@ -181,11 +206,39 @@ textarea:focus-visible,
   letter-spacing: 0.02em;
 }
 
+/* 运行状态：只表达就绪 / 冲突，不承载离线说明 */
+.status-chip {
+  display: inline-flex;
+  height: 22px;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 0 8px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+}
+
+.status-chip.error {
+  border-color: var(--proof);
+  color: var(--proof);
+}
+
+.status-chip.error .status-dot {
+  background: var(--proof);
+}
+
 .titlebar-actions {
   display: flex;
   align-items: center;
   gap: 2px;
-  margin-left: auto;
+  margin-left: 2px;
   -webkit-app-region: no-drag;
 }
 
@@ -218,9 +271,28 @@ textarea:focus-visible,
   color: var(--ink);
 }
 
-.icon-btn.power-btn:hover {
-  background: var(--proof-weak);
-  color: var(--proof);
+/* 关闭行为 Tooltip：悬停 × 或键盘聚焦时出现 */
+.dot[data-tip]:hover::after,
+.dot[data-tip]:focus-visible::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: 34px;
+  right: 0;
+  z-index: 60;
+  width: 196px;
+  padding: 7px 9px;
+  border: 1px solid var(--rule-2);
+  border-radius: 2px;
+  background: var(--plate);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
+  color: var(--ink-2);
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
 }
 
 .dots {
@@ -263,58 +335,82 @@ textarea:focus-visible,
   color: var(--ink);
 }
 
-.quit-anchor {
-  position: relative;
+/* ---------- 冲突 Banner（仅错误态） ---------- */
+
+.banners {
   display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px 0;
 }
 
-.menu-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  -webkit-app-region: no-drag;
-}
-
-.title-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 201;
-  min-width: 160px;
-  padding: 4px;
-  border: 1px solid var(--rule-2);
-  border-radius: 3px;
-  background: var(--plate);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
-  -webkit-app-region: no-drag;
-}
-
-.title-menu button {
-  display: block;
-  width: 100%;
-  padding: 8px 10px;
-  border: 0;
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px 9px 10px;
+  border: 1px solid var(--proof);
+  border-left-width: 3px;
   border-radius: 2px;
-  background: transparent;
-  color: var(--ink);
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  white-space: nowrap;
-  cursor: pointer;
-  -webkit-app-region: no-drag;
+  background: var(--proof-weak);
 }
 
-.title-menu button:hover {
-  background: var(--hover);
-}
-
-.title-menu button.danger {
+.banner-mark {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  place-items: center;
   color: var(--proof);
 }
 
-.title-menu button.danger:hover {
-  background: var(--proof-weak);
+.banner-mark svg {
+  width: 16px;
+  height: 16px;
+}
+
+.banner-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.banner-title {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.banner-title b {
+  font-family: var(--mono);
+  font-weight: 600;
+}
+
+.banner-desc {
+  margin-top: 1px;
+  color: var(--ink-2);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.banner-action {
+  height: 28px;
+  flex: none;
+  padding: 0 11px;
+  border: 1px solid var(--proof);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--proof) 12%, transparent);
+  color: var(--proof);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 140ms ease-out;
+}
+
+.banner-action:hover {
+  background: color-mix(in srgb, var(--proof) 18%, transparent);
 }
 
 /* ---------- 首页 ---------- */
@@ -346,7 +442,7 @@ textarea:focus-visible,
   flex: 1;
   flex-direction: column;
   overflow: hidden;
-  padding: 14px 20px 12px;
+  padding: 16px 20px 12px;
   border: 1px solid var(--rule-2);
   border-radius: 3px;
   background: var(--plate);
@@ -417,50 +513,16 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
-.plate-meta {
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 0 2px 9px;
-  border-bottom: 1px solid var(--rule);
-  color: var(--ink-3);
-  font-size: 9.5px;
-  letter-spacing: 0.03em;
-}
-
-.plate-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ink-2);
-  font-family: var(--mono);
-  font-size: 9.5px;
-  letter-spacing: 0.04em;
-}
-
 .status-dot {
   display: inline-block;
   width: 5px;
   height: 5px;
+  flex: none;
   background: var(--ok);
 }
 
-.plate-status.error {
-  color: var(--proof);
-}
-
-.plate-status.error .status-dot {
-  background: var(--proof);
-}
-
-.plate-local {
-  color: var(--ink-3);
-  font-family: var(--mono);
-  font-size: 9.5px;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
+.status-dot.muted {
+  background: var(--rule-2);
 }
 
 .plate-center {
@@ -470,29 +532,46 @@ textarea:focus-visible,
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 12px 6px 8px;
+  overflow-y: auto;
+  padding: 10px 4px;
   text-align: center;
 }
 
 .plate-center h1 {
-  margin: 0 0 8px;
+  margin: 0 0 7px;
   color: var(--ink);
-  font-size: 25px;
+  font-size: 22px;
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.2;
 }
 
 .plate-center .sub {
-  margin: 0 0 26px;
+  margin: 0 0 24px;
   color: var(--ink-2);
   font-size: 11.5px;
-  letter-spacing: 0.06em;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+}
+
+/* 核心操作：主按钮 + 右侧工具簇，窄窗口纵向堆叠 */
+.action-cluster {
+  display: flex;
+  width: min(100%, 400px);
+  flex-direction: column;
+  gap: 12px;
+}
+
+.right-stack {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .capture-btn {
   display: flex;
-  width: min(100%, 356px);
+  width: 100%;
   height: 52px;
   align-items: center;
   justify-content: flex-start;
@@ -517,18 +596,21 @@ textarea:focus-visible,
   opacity: 0.95;
 }
 
-.capture-btn kbd {
+/* 快捷键提示只是按钮内的纯文本，不构成第二个按钮 */
+.capture-btn .hk {
   margin-left: auto;
-  padding: 4px 8px;
-  border: 1px solid color-mix(in srgb, var(--on-signal) 35%, transparent);
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--on-signal) 12%, transparent);
   color: inherit;
   font-family: var(--mono);
   font-size: 10.5px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.02em;
+  opacity: 0.55;
   white-space: nowrap;
+  transition: opacity 140ms ease-out;
+}
+
+.capture-btn:hover .hk {
+  opacity: 0.8;
 }
 
 .capture-btn:hover {
@@ -540,52 +622,43 @@ textarea:focus-visible,
   transform: translateY(1px);
 }
 
+/* 贴图会话行：数量与空态引导，不再和快捷键混排成一格格的表 */
 .home-status {
-  display: grid;
-  width: min(100%, 420px);
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin-top: 22px;
-  border: 1px solid var(--rule);
-  background: var(--plate);
-  color: var(--ink-2);
-  font-size: 10.5px;
-  line-height: 1.5;
-  text-align: left;
-}
-
-.status-cell {
-  min-width: 0;
-  padding: 8px 10px 7px;
-}
-
-.status-cell + .status-cell {
-  border-left: 1px solid var(--rule);
-}
-
-.status-key {
-  display: block;
-  margin-bottom: 2px;
+  display: flex;
+  min-height: 17px;
+  align-items: baseline;
+  justify-content: center;
+  gap: 5px;
   color: var(--ink-3);
-  font-size: 9px;
-  letter-spacing: 0.08em;
+  font-size: 10.5px;
+  line-height: 1.4;
 }
 
-.status-cell b {
+.home-status b {
   color: var(--ink);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 500;
 }
 
+.home-status .status-dot {
+  align-self: center;
+}
+
 .home-actions {
-  display: flex;
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
-  margin-top: 12px;
 }
 
 .ghost-btn {
-  height: 30px;
-  padding: 0 12px;
+  display: flex;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
   border: 1px solid var(--rule-2);
   border-radius: 2px;
   background: transparent;
@@ -593,10 +666,18 @@ textarea:focus-visible,
   font: inherit;
   font-size: 11.5px;
   cursor: pointer;
+  white-space: nowrap;
   transition:
     background 140ms ease-out,
     border-color 140ms ease-out,
     color 140ms ease-out;
+}
+
+.ghost-btn .hk {
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
 }
 
 .ghost-btn:hover:not(:disabled) {
@@ -625,20 +706,61 @@ textarea:focus-visible,
   text-underline-offset: 2px;
 }
 
+/* 空态引导：只在没有截图历史时出现 */
+.empty-hint {
+  width: min(100%, 400px);
+  margin: 10px 0 0;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.empty-hint kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 9.5px;
+}
+
+/* 底部速查：平时收起，悬停或键盘聚焦时浮现，覆盖内容区但不占布局 */
+.foot-zone {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 30;
+  height: 34px;
+}
+
 .app-foot {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
   display: flex;
-  min-height: 30px;
-  flex: none;
-  flex-wrap: wrap;
+  height: 28px;
   align-items: center;
-  justify-content: space-between;
-  gap: 6px 12px;
-  padding: 6px 14px;
+  padding: 0 14px;
   border-top: 1px solid var(--rule);
   background: var(--paper);
   color: var(--ink-3);
   font-size: 10px;
   line-height: 1.4;
+  transform: translateY(100%);
+  transition: transform 160ms ease-out;
+}
+
+.foot-zone:hover .app-foot,
+.foot-zone:focus-within .app-foot {
+  transform: translateY(0);
+}
+
+.app-foot .mono {
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
 }
 
 /* ---------- 设置页 ---------- */
@@ -1066,6 +1188,32 @@ textarea:focus-visible,
   cursor: not-allowed;
 }
 
+/* 退出入口：电源菜单删除后，只保留设置页底部这一个文字按钮 */
+.setting-tail {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+}
+
+.text-btn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.text-btn:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.text-btn.danger {
+  color: var(--proof);
+}
+
 /* 图标定制 */
 .toolbar-preview {
   display: flex;
@@ -1372,6 +1520,235 @@ textarea:focus-visible,
   to {
     opacity: 1;
     transform: translate(-50%, 0);
+  }
+}
+
+/* ---------- 自适应（窗口 480×400 – 1200×900） ---------- */
+
+/* ≥860：主操作与工具簇并排，留白按横向关系放大 */
+@media (min-width: 860px) {
+  .plate-center h1 {
+    font-size: 24px;
+  }
+
+  .plate-center .sub {
+    margin-bottom: 28px;
+  }
+
+  .action-cluster {
+    width: min(100%, 640px);
+    flex-direction: row;
+    align-items: stretch;
+    justify-content: center;
+    gap: 14px;
+  }
+
+  .capture-btn {
+    width: 340px;
+    height: 56px;
+  }
+
+  .right-stack {
+    width: 236px;
+    justify-content: center;
+  }
+
+  .home-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .ghost-btn {
+    justify-content: space-between;
+    padding: 0 12px;
+  }
+
+  .home-status {
+    justify-content: flex-start;
+  }
+
+  .empty-hint {
+    width: min(100%, 640px);
+  }
+}
+
+/* ≤600：设置页侧栏改为顶部横向标签 */
+@media (max-width: 600px) {
+  .settings-body {
+    flex-direction: column;
+  }
+
+  .tabs {
+    width: 100%;
+    flex-direction: row;
+    gap: 2px;
+    overflow-x: auto;
+    padding: 8px 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .tab {
+    width: auto;
+    flex: 1;
+    justify-content: center;
+    padding: 7px 8px;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  .tab.active {
+    border-left-color: var(--rule);
+    border-bottom-color: var(--signal);
+  }
+
+  .panes {
+    padding: 14px 14px 18px;
+  }
+}
+
+/* ≤560：标题栏瘦身，首页节奏收紧，历史条目换行 */
+@media (max-width: 560px) {
+  .titlebar {
+    height: 44px;
+    gap: 8px;
+    padding: 0 6px 0 12px;
+  }
+
+  .title-version {
+    display: none;
+  }
+
+  .status-chip {
+    height: 20px;
+    padding: 0 6px;
+    font-size: 9px;
+  }
+
+  .banners {
+    padding: 10px 12px 0;
+  }
+
+  .banner {
+    gap: 9px;
+    padding: 8px 10px;
+  }
+
+  .banner-title {
+    font-size: 11.5px;
+  }
+
+  .banner-desc {
+    font-size: 10px;
+  }
+
+  .banner-action {
+    height: 26px;
+    padding: 0 8px;
+    font-size: 11px;
+  }
+
+  .app-body {
+    padding: 12px 12px 10px;
+  }
+
+  .capture-plate {
+    padding: 14px 14px 10px;
+  }
+
+  .plate-center h1 {
+    font-size: 20px;
+    margin-bottom: 6px;
+  }
+
+  .plate-center .sub {
+    font-size: 11px;
+    margin-bottom: 18px;
+  }
+
+  .capture-btn {
+    height: 48px;
+    padding: 0 13px;
+    font-size: 13.5px;
+  }
+
+  .ghost-btn {
+    height: 34px;
+    padding: 0 8px;
+    font-size: 11px;
+  }
+
+  .home-actions {
+    gap: 6px;
+  }
+
+  .app-foot {
+    padding: 0 12px;
+  }
+
+  .history-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .history-item {
+    flex-wrap: wrap;
+    padding-bottom: 4px;
+  }
+
+  .history-open {
+    flex-basis: 100%;
+  }
+
+  .history-thumb {
+    width: 48px;
+    height: 32px;
+  }
+}
+
+/* ≤430 高：压缩纵向节奏，避免核心操作被推出窗口 */
+@media (max-height: 430px) {
+  .plate-center {
+    justify-content: flex-start;
+    padding-top: 4px;
+  }
+
+  .plate-center h1 {
+    font-size: 18px;
+    margin-bottom: 4px;
+  }
+
+  .plate-center .sub {
+    margin-bottom: 12px;
+    font-size: 10.5px;
+  }
+
+  .capture-btn {
+    height: 44px;
+  }
+
+  .action-cluster {
+    gap: 9px;
+  }
+
+  .ghost-btn {
+    height: 32px;
+  }
+
+  .empty-hint {
+    margin-top: 6px;
+    font-size: 10px;
+  }
+}
+
+/* ≤500：隐藏按钮内快捷键，保证两列次级按钮不挤压 */
+@media (max-width: 500px) {
+  .ghost-btn .hk {
+    display: none;
+  }
+
+  .home-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

@@ -12,12 +12,15 @@ export interface StoredConfig {
   hotkey: string
   pinHotkey: string
   iconTheme: IconTheme
+  /** 首次关闭到托盘时是否已提示过 */
+  trayHintShown: boolean
 }
 
 const DEFAULTS: StoredConfig = {
   hotkey: DEFAULT_HOTKEY,
   pinHotkey: DEFAULT_PIN_HOTKEY,
   iconTheme: 'default',
+  trayHintShown: false,
 }
 
 let legacyDataDir: string | null = null
@@ -83,6 +86,7 @@ function normalize(raw: unknown): StoredConfig {
       typeof iconTheme === 'string' && (ICON_THEMES as readonly string[]).includes(iconTheme)
         ? (iconTheme as IconTheme)
         : DEFAULTS.iconTheme,
+    trayHintShown: source.trayHintShown === true,
   }
 }
 

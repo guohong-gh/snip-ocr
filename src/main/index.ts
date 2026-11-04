@@ -38,6 +38,7 @@ import {
   markHomeReady,
   openMainWindow,
   requestOpenSettings,
+  setHomeHiddenHandler,
   setQuitting,
 } from './homeWindow'
 import { pinService, registerPinScheme } from './pin'
@@ -60,6 +61,7 @@ const START_HIDDEN = process.argv.includes('--hidden')
 const START_SETTINGS = process.argv.includes('--settings')
 
 let tray: Tray | null = null
+let trayHintShown = false
 let hotkey = DEFAULT_HOTKEY
 let hotkeyError: string | null = null
 let pinHotkey = DEFAULT_PIN_HOTKEY
@@ -100,6 +102,21 @@ function notify(title: string, body: string): void {
   }
   if (Notification.isSupported()) new Notification({ title, body, silent: true }).show()
   else tray?.setToolTip(`snip-ocr · ${title} ${body}\n退出请使用托盘右键菜单`)
+}
+
+/** 首次把主窗关到托盘时提示一次，之后不再打扰 */
+function showTrayHintOnce(): void {
+  if (trayHintShown) return
+  trayHintShown = true
+  saveConfig({ trayHintShown: true })
+  const title = '已收起到托盘'
+  const body = `按 ${hotkey} 随时截图；完全退出请用托盘菜单。`
+  if (SELFTEST) {
+    console.log(`[notify] ${title} ${body}`)
+    return
+  }
+  if (process.platform === 'win32' && tray) tray.displayBalloon({ title, content: body })
+  else notify(title, body)
 }
 
 function describe(outcome: CaptureOutcome): { title: string; body: string } | null {
@@ -326,6 +343,8 @@ function boot(): void {
 
   void pinService.init()
   createTray()
+  trayHintShown = config.trayHintShown
+  setHomeHiddenHandler(showTrayHintOnce)
   void screenshotService
     .prewarm()
     .catch((error) => console.error('[snip] overlay prewarm failed:', error))

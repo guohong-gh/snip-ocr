@@ -8,6 +8,17 @@ let homeWindow: BrowserWindow | null = null
 let pageReady = false
 let pendingSettings = false
 let quitting = false
+let hiddenHandler: (() => void) | null = null
+
+/** 主窗关闭到托盘后触发（首次提示挂在主进程） */
+export function setHomeHiddenHandler(handler: (() => void) | null): void {
+  hiddenHandler = handler
+}
+
+function hideHome(win: BrowserWindow): void {
+  win.hide()
+  hiddenHandler?.()
+}
 
 export function getHomeWindow(): BrowserWindow | null {
   return homeWindow && !homeWindow.isDestroyed() ? homeWindow : null
@@ -34,12 +45,16 @@ export function openMainWindow(options?: { showSettings?: boolean }): BrowserWin
     icon: join(app.getAppPath(), 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
     width: 680,
     height: 560,
+    minWidth: 480,
+    minHeight: 400,
+    maxWidth: 1200,
+    maxHeight: 900,
     useContentSize: true,
     show: false,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
-    resizable: false,
+    resizable: true,
     minimizable: true,
     maximizable: false,
     fullscreenable: false,
@@ -65,7 +80,7 @@ export function openMainWindow(options?: { showSettings?: boolean }): BrowserWin
   win.on('close', (event) => {
     if (quitting) return
     event.preventDefault()
-    win.hide()
+    hideHome(win)
   })
   win.on('ready-to-show', () => {
     win.show()
@@ -94,7 +109,7 @@ export function homeWindowAction(action: HomeWindowAction): void {
   const win = getHomeWindow()
   if (!win) return
   if (action === 'minimize') win.minimize()
-  else win.hide()
+  else hideHome(win)
 }
 
 export function markHomeReady(): void {
