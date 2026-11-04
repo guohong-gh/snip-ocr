@@ -194,6 +194,14 @@ export function listPinHistory(): Promise<PinHistoryItem[]> {
   })
 }
 
+/** 历史是否有条目（只查索引，不读缩略图） */
+export function hasPinHistory(): Promise<boolean> {
+  return enqueue(async () => {
+    const items = await ensureLoaded()
+    return items.length > 0
+  })
+}
+
 export function deletePinHistory(id: string): Promise<void> {
   return enqueue(async () => {
     const items = await ensureLoaded()
@@ -202,6 +210,7 @@ export function deletePinHistory(id: string): Promise<void> {
     const [removed] = items.splice(index, 1)
     await removeFiles([removed.file, removed.thumb])
     await saveIndex(items)
+    for (const listener of changeListeners) listener()
   })
 }
 
@@ -212,6 +221,7 @@ export function clearPinHistory(): Promise<void> {
     await removeFiles(items.flatMap((item) => [item.file, item.thumb]))
     items.length = 0
     await saveIndex(items)
+    for (const listener of changeListeners) listener()
   })
 }
 

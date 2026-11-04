@@ -764,8 +764,8 @@ export default function App() {
                   <button
                     type="button"
                     className="ghost-btn"
-                    disabled={!state?.hasLastCapture}
-                    title={state?.hasLastCapture ? '贴最近一次截图' : '还没有可贴的截图'}
+                    disabled={!state?.hasHistory}
+                    title={state?.hasHistory ? '贴最近一张截图' : '还没有截图记录，先截一张'}
                     onClick={() => window.snip.pinLast()}
                   >
                     贴最近一张

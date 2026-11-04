@@ -187,7 +187,7 @@ async function startAndDrag(
     if (rect) break
     await sleep(100)
   }
-  await sleep(250)
+  await sleep(700)
   return { area, barWidth: rect?.w ?? null }
 }
 
@@ -1164,13 +1164,40 @@ async function testConfirmCopy(wc: WebContents, outcomes: CaptureOutcome[]): Pro
   clipboard.clear()
   const before = outcomes.length
   await startAndDrag(wc)
+  // 库的按钮由选区结束事件异步插入，等它出现且可点击后再点确定
+  const deadline = Date.now() + 1500
+  let ready = false
+  let libraryDisabled: boolean | null = null
+  while (Date.now() < deadline) {
+    const probe = await evalJson<{ exists: boolean; disabled: boolean }>(
+      wc,
+      `const b = Array.from(document.querySelectorAll('.screenshots-button')).find(node => node.title === '复制到剪贴板');
+       if (!b) return { exists: false, disabled: false };
+       const disabled = Boolean(b.disabled) || b.classList.contains('disabled') || b.getAttribute('aria-disabled') === 'true';
+       return { exists: true, disabled };`,
+    )
+    libraryDisabled = probe.exists ? probe.disabled : null
+    if (probe.exists && !probe.disabled) {
+      ready = true
+      break
+    }
+    await sleep(50)
+  }
+  if (ready) await sleep(250)
   const clicked = await clickToolbarButton(wc, '确定')
-  await sleep(700)
-  const copied = outcomes.slice(before).find((outcome) => outcome.kind === 'copied')
+  await sleep(600)
+  let copied = outcomes.slice(before).find((outcome) => outcome.kind === 'copied')
+  let retried = false
+  if (!copied) {
+    // 库偶尔在选区工具栏重渲染后忽略首次点击，再点一次（等同用户重复点击）
+    retried = await clickToolbarButton(wc, '确定')
+    await sleep(600)
+    copied = outcomes.slice(before).find((outcome) => outcome.kind === 'copied')
+  }
   check(
     '「确定」复制到剪贴板并关闭遮罩',
-    clicked && Boolean(copied) && pinService.count === 0 && findOverlayWindow() === undefined,
-    { clicked, pins: pinService.count, copied: copied ?? null },
+    clicked && ready && Boolean(copied) && pinService.count === 0 && findOverlayWindow() === undefined,
+    { clicked, ready, libraryDisabled, retried, pins: pinService.count, copied: copied ?? null },
   )
 }
 

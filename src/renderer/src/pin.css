@@ -22,22 +22,29 @@ body {
   touch-action: none;
 }
 
+/*
+ * 尺寸/位置由 pin.tsx 按窗口 DIP × devicePixelRatio 计算后写成内联样式：
+ * 缩小窗口时由浏览器按目标设备像素重新栅格化，而不是让合成器拉低已有位图。
+ * 不要加 will-change: transform，它会让元素按初始尺寸栅格化后被整体缩放，缩小即变糊。
+ */
 .pin-image {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
   pointer-events: none;
   user-select: none;
   -webkit-user-drag: none;
   transform-origin: 0 0;
-  will-change: transform;
 }
 
-/* 边框画在图片上方，inset 阴影不占布局 */
+/* 边框与图片共用同一组几何值（pin.tsx 内联 left/top/width/height），不占布局 */
 .pin-frame {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.92),

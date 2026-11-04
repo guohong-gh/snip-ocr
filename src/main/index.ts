@@ -45,6 +45,7 @@ import {
   clearPinHistory,
   copyPinHistoryItem,
   deletePinHistory,
+  hasPinHistory,
   listPinHistory,
   onPinHistoryChange,
   readPinHistoryInput,
@@ -66,6 +67,8 @@ let pinHotkeyError: string | null = null
 let iconTheme: IconTheme = 'default'
 let customIconUrl: string | null = null
 let autostart = false
+/** 截图历史是否至少有一条（贴图快捷键与首页按钮的可用态都跟着它走） */
+let hasHistory = false
 
 function buildState(): SnipState {
   return {
@@ -78,7 +81,7 @@ function buildState(): SnipState {
     autostart,
     autostartSupported: app.isPackaged,
     pinCount: pinService.count,
-    hasLastCapture: Boolean(screenshotService.lastPinCapture),
+    hasHistory,
     version: app.getVersion(),
     platform: process.platform,
     displayCount: screen.getAllDisplays().length,
@@ -131,11 +134,21 @@ function trayMenu(): Menu {
 function refreshTray(): void {
   if (!tray) return
   tray.setContextMenu(trayMenu())
+  const error = hotkeyError ?? pinHotkeyError
   tray.setToolTip(
-    hotkeyError
-      ? `snip-ocr · ${hotkeyError}\n退出请使用托盘右键菜单`
+    error
+      ? `snip-ocr · ${error}\n退出请使用托盘右键菜单`
       : `snip-ocr · ${hotkey} 截图\n退出请使用托盘右键菜单`,
   )
+}
+
+/** 重新读取历史是否有条目，并广播给主窗（只在启动与删除/清空时调用，避免截图过程中额外重绘） */
+function refreshHistoryState(): void {
+  void hasPinHistory().then((value) => {
+    if (hasHistory === value) return
+    hasHistory = value
+    broadcastState()
+  })
 }
 
 async function startCapture(): Promise<void> {
@@ -157,15 +170,24 @@ function applyHotkey(next: string): SetHotkeyResult {
 }
 
 async function pinLastCapture(): Promise<void> {
-  if (screenshotService.isCapturing) return
-  const last = screenshotService.lastPinCapture
-  if (!last) {
-    notify('贴图失败', '还没有可贴的截图')
+  if (screenshotService.isCapturing) {
+    // 截图进行中不打扰当前会话（保持长图态语义不变）
+    console.log('[snip] 截图进行中，忽略贴图快捷键')
+    return
+  }
+  const latest = (await listPinHistory())[0]
+  if (!latest) {
+    notify('贴图失败', '还没有截图记录，先按截图快捷键截一张')
+    return
+  }
+  const input = await readPinHistoryInput(latest.id)
+  if (!input) {
+    notify('贴图失败', '最近一张截图已不存在')
     return
   }
   try {
-    await pinService.createPin(last)
-    const size = nativeImage.createFromBuffer(last.buffer).getSize()
+    await pinService.createPin(input, { recordHistory: false })
+    const size = nativeImage.createFromBuffer(input.buffer).getSize()
     notify('已贴图', `${size.width} × ${size.height} px`)
   } catch (error) {
     notify('贴图失败', error instanceof Error ? error.message : String(error))
@@ -175,30 +197,32 @@ async function pinLastCapture(): Promise<void> {
 function applyPinHotkey(next: string): SetHotkeyResult {
   const target = next.trim() || DEFAULT_PIN_HOTKEY
   if (pinHotkey === target && globalShortcut.isRegistered(target)) return { ok: true }
-  const previous = pinHotkey
-  if (previous && globalShortcut.isRegistered(previous)) globalShortcut.unregister(previous)
+  const handler = (): void => void pinLastCapture()
   let ok = false
   try {
-    ok = globalShortcut.register(target, () => void pinLastCapture())
+    ok = globalShortcut.register(target, handler)
   } catch {
     ok = false
   }
   if (!ok) {
-    const fallback = previous || DEFAULT_PIN_HOTKEY
-    let restored = false
-    try {
-      restored = globalShortcut.register(fallback, () => void pinLastCapture())
-    } catch {
-      restored = false
+    // 失败时不抢占旧键；旧键若已被注销（启动场景），只在它不同于目标键时补注册一次
+    if (pinHotkey !== target && !globalShortcut.isRegistered(pinHotkey)) {
+      try {
+        globalShortcut.register(pinHotkey, handler)
+      } catch {
+        // 旧键也注册不上时保持未注册，错误提示会如实说明
+      }
     }
-    pinHotkey = restored ? fallback : previous
     pinHotkeyError = `快捷键 ${target} 注册失败，可能已被其它应用占用`
+    refreshTray()
     broadcastState()
     return { ok: false, error: pinHotkeyError }
   }
+  if (pinHotkey !== target && globalShortcut.isRegistered(pinHotkey)) globalShortcut.unregister(pinHotkey)
   pinHotkey = target
   pinHotkeyError = null
   saveConfig({ pinHotkey: target })
+  refreshTray()
   broadcastState()
   return { ok: true }
 }
@@ -296,7 +320,9 @@ function boot(): void {
   customIconUrl = readCustomIconDataUrl()
   void screenshotService.setToolbarTheme(iconTheme, customIconUrl)
   autostart = readAutostart()
-  applyPinHotkey(config.pinHotkey)
+  const pinApplied = applyPinHotkey(config.pinHotkey)
+  if (!pinApplied.ok) notify('贴图快捷键不可用', `${pinApplied.error}，可在设置里更换`)
+  refreshHistoryState()
 
   void pinService.init()
   createTray()
@@ -311,6 +337,8 @@ function boot(): void {
     getHomeWindow()?.webContents.send(IPC.pinHistoryChanged)
   })
   screenshotService.onOutcome((outcome) => {
+    // 成功出口（复制/另存/贴图/长图）都会写一条历史，这里同步可用态
+    if (outcome.kind !== 'cancelled') hasHistory = true
     const message = describe(outcome)
     if (message) notify(message.title, message.body)
     broadcastState()
@@ -357,10 +385,12 @@ function boot(): void {
   ipcMain.handle(IPC.pinHistoryList, () => listPinHistory())
   ipcMain.handle(IPC.pinHistoryDelete, async (_event, id: unknown) => {
     if (typeof id === 'string' && id) await deletePinHistory(id)
+    refreshHistoryState()
     return listPinHistory()
   })
   ipcMain.handle(IPC.pinHistoryClear, async () => {
     await clearPinHistory()
+    refreshHistoryState()
     return listPinHistory()
   })
   ipcMain.handle(IPC.pinHistoryCopy, async (_event, id: unknown) => {

@@ -44,7 +44,7 @@ export interface SnipState {
   hotkey: string
   /** 上次保存截图快捷键失败的原因（被其它应用占用等） */
   hotkeyError: string | null
-  /** 当前生效的贴图快捷键（贴最近一次截图） */
+  /** 当前生效的贴图快捷键（贴最近一张截图，来自截图历史最新一条） */
   pinHotkey: string
   pinHotkeyError: string | null
   iconTheme: IconTheme
@@ -56,8 +56,8 @@ export interface SnipState {
   autostartSupported: boolean
   /** 当前贴图窗口数量 */
   pinCount: number
-  /** 是否存在可再次贴图的上一次截图 */
-  hasLastCapture: boolean
+  /** 截图历史是否至少有一条（贴图快捷键可贴出的前提） */
+  hasHistory: boolean
   version: string
   platform: string
   displayCount: number

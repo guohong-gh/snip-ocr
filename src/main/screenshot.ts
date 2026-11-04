@@ -24,7 +24,7 @@ import {
   OVERLAY_HUD_RECT_PREFIX,
   updateOverlayTheme,
 } from './overlayUi'
-import { pinService, type PinCaptureInput } from './pin'
+import { pinService } from './pin'
 import { recordPinHistory } from './pinHistory'
 import {
   buildRowSignatures,
@@ -155,7 +155,6 @@ class ScreenshotService {
   private disposed = false
   private theme: IconTheme = 'default'
   private customIconUrl: string | null = null
-  private lastCapture: PinCaptureInput | null = null
   private longShot: LongShotSession | null = null
   private longShotResult: LongShotResult | null = null
   private longShotToken = 0
@@ -188,10 +187,6 @@ class ScreenshotService {
 
   get currentHotkey(): string | null {
     return this.hotkey
-  }
-
-  get lastPinCapture(): PinCaptureInput | null {
-    return this.lastCapture
   }
 
   /** 截图视图（仅用于自检脚本读取 DOM / 注入输入事件） */
@@ -295,7 +290,6 @@ class ScreenshotService {
         return
       }
       // 不 preventDefault：库的默认行为会弹出系统保存对话框并写 PNG，收尾由窗口 hide 触发
-      this.lastCapture = { buffer, bounds: data.bounds, display: data.display }
       const size = this.sizeOf(buffer, data)
       void recordPinHistory(buffer, size.width, size.height, 'save')
       this.emit({ kind: 'saved', ...size })
@@ -467,7 +461,6 @@ class ScreenshotService {
     const finalBuffer = buffer
     const finalData = data
     const size = this.sizeOf(finalBuffer, finalData)
-    this.lastCapture = { buffer: finalBuffer, bounds: finalData.bounds, display: finalData.display }
     if (pinRequest) {
       // 先收起遮罩再贴图，避免两个窗口重叠闪烁
       await this.stopCapture()
@@ -813,17 +806,6 @@ class ScreenshotService {
   private copyLongShot(): void {
     const result = this.longShotResult
     if (!result) return
-    this.lastCapture = {
-      buffer: result.stitched.buffer,
-      bounds: result.bounds,
-      display: {
-        x: result.display.bounds.x,
-        y: result.display.bounds.y,
-        width: result.display.bounds.width,
-        height: result.display.bounds.height,
-        scaleFactor: result.display.scaleFactor,
-      },
-    }
     clipboard.writeImage(nativeImage.createFromBuffer(result.stitched.buffer))
     this.emit({
       kind: 'copied',
