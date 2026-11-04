@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { dirname, join, resolve } from 'node:path'
 import { DEFAULT_HOTKEY, DEFAULT_PIN_HOTKEY, type PinMeta } from '@shared/ipc'
 import { HOME_TITLE, openMainWindow } from './homeWindow'
-import { normalizeOcrText, ocrService } from './ocr'
+import { mergeOcrLines, normalizeOcrText, ocrService, type OcrLineBox } from './ocr'
 import { computePinPlacement, pinImageUrl, pinService, pinTempDir, resolvePinImagePath } from './pin'
 import { screenshotService, trayIconPath, type CaptureOutcome } from './screenshot'
 import { stitchVertical } from './stitch'
@@ -475,6 +475,75 @@ async function testOcr(shotPath: string): Promise<void> {
     'OCR 文本规范化修复连字符/全角标点',
     normalizeOcrText('Release 2026 一 1 1 一 04') === 'Release 2026-11-04' &&
       normalizeOcrText('Windows OCR 98 ． 5 ％ 一 > 100 ％') === 'Windows OCR 98.5% -> 100%',
+    {},
+  )
+  const word = (text: string, x: number, y: number, width = 15, height = 20) => ({
+    text,
+    x,
+    y,
+    width,
+    height,
+  })
+  const lineBox = (
+    text: string,
+    y: number,
+    words: ReturnType<typeof word>[],
+  ): OcrLineBox => ({
+    text,
+    x: 0,
+    y,
+    width: 400,
+    height: 22,
+    words,
+  })
+  check(
+    'OCR 双引擎：纯中文行保留中文结果',
+    mergeOcrLines(
+      [lineBox('本 地 截 图 工 具', 10, [word('本', 0, 10), word('地', 15, 10)])],
+      [lineBox('local screenshot', 10, [word('local', 0, 10, 50), word('screenshot', 60, 10, 90)])],
+    ) === '本 地 截 图 工 具',
+    {},
+  )
+  check(
+    'OCR 双引擎：纯拉丁行采用英文结果',
+    mergeOcrLines(
+      [lineBox('AIt+A 3000', 10, [word('AIt+A', 0, 10, 60), word('3000', 70, 10, 30)])],
+      [lineBox('Alt+A 3000', 10, [word('Alt+A', 0, 10, 60), word('3000', 70, 10, 30)])],
+    ) === 'Alt+A 3000',
+    {},
+  )
+  check(
+    'OCR 双引擎：混排行按词框合并',
+    normalizeOcrText(
+      mergeOcrLines(
+        [
+          lineBox('支 持 AIt+A 快 捷 键', 10, [
+            word('支', 0, 10),
+            word('持', 15, 10),
+            word('AIt+A', 200, 10, 60),
+            word('快', 270, 10),
+            word('捷', 285, 10),
+            word('键', 300, 10),
+          ]),
+        ],
+        [lineBox('Alt+A', 10, [word('Alt+A', 200, 10, 60)])],
+      ),
+    ) === '支持 Alt+A 快捷键',
+    {},
+  )
+  check(
+    'OCR 双引擎：中文漏识别的拉丁行补回',
+    normalizeOcrText(
+      mergeOcrLines(
+        [lineBox('本 地 截 图', 10, [word('本', 0, 10)])],
+        [lineBox('Release 2026-11-04', 100, [word('Release', 0, 100, 80)])],
+      ),
+    ) === '本地截图\nRelease 2026-11-04',
+    {},
+  )
+  check(
+    'OCR 双引擎：无英文引擎时保持单引擎行为',
+    mergeOcrLines([lineBox('本 地 截 图', 10, [])], null) === '本 地 截 图',
     {},
   )
   try {

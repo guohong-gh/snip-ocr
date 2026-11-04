@@ -10,14 +10,35 @@ const execFileAsync = promisify(execFile)
 const OCR_TIMEOUT_MS = 15000
 const REMOVE_RETRIES = 4
 const REMOVE_RETRY_DELAY_MS = 100
-/** 小裁切在 Windows OCR 上会整行漏识别，2× 上采样可恢复；大图本身够清晰，放大只增加耗时 */
+/** 超过该像素数视为整屏/大视野，原生字号已够大，放大只增加耗时 */
 const OCR_UPSCALE_MAX_PIXELS = 1_000_000
+/** 放大后最长边上限，避免触到 OcrEngine.MaxImageDimension */
 const OCR_UPSCALE_MAX_SIDE = 4000
 const OCR_UPSCALE_FACTOR = 2
+/** 微裁切（单行短标签）在原生尺寸下识别更准，放大反而掉字 */
+const OCR_MICRO_CROP_MAX_WIDTH = 400
+const OCR_MICRO_CROP_MAX_HEIGHT = 80
 
 export interface OcrResult {
   text: string
   language: string
+}
+
+export interface OcrWordBox {
+  text: string
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface OcrLineBox {
+  text: string
+  x: number
+  y: number
+  width: number
+  height: number
+  words: OcrWordBox[]
 }
 
 const FULL_WIDTH_TO_HALF: Record<string, string> = {
@@ -67,19 +88,104 @@ export function normalizeOcrText(raw: string): string {
   )
 }
 
+const HAN_PATTERN = /\p{Script=Han}/u
+const LATIN_PATTERN = /[A-Za-z0-9]/
+
+/** 按尺寸自适应：大视野与微裁切保持原样，其余小字号裁切 2× 放大（实测 3× 无额外收益） */
+function ocrScaleFactor(width: number, height: number): number {
+  if (width * height > OCR_UPSCALE_MAX_PIXELS) return 1
+  if (width <= OCR_MICRO_CROP_MAX_WIDTH && height <= OCR_MICRO_CROP_MAX_HEIGHT) return 1
+  if (Math.max(width, height) * OCR_UPSCALE_FACTOR > OCR_UPSCALE_MAX_SIDE) return 1
+  return OCR_UPSCALE_FACTOR
+}
+
 function prepareImageForOcr(buffer: Buffer): Buffer {
   const image = nativeImage.createFromBuffer(buffer)
   if (image.isEmpty()) return buffer
   const { width, height } = image.getSize()
-  if (width * height > OCR_UPSCALE_MAX_PIXELS) return buffer
-  if (Math.max(width, height) * OCR_UPSCALE_FACTOR > OCR_UPSCALE_MAX_SIDE) return buffer
+  const factor = ocrScaleFactor(width, height)
+  if (factor === 1) return buffer
   return image
-    .resize({
-      width: width * OCR_UPSCALE_FACTOR,
-      height: height * OCR_UPSCALE_FACTOR,
-      quality: 'best',
-    })
+    .resize({ width: width * factor, height: height * factor, quality: 'best' })
     .toPNG()
+}
+
+function lineOverlap(a: OcrLineBox, b: OcrLineBox): number {
+  const top = Math.max(a.y, b.y)
+  const bottom = Math.min(a.y + a.height, b.y + b.height)
+  if (bottom <= top) return 0
+  const vertical = (bottom - top) / (Math.min(a.height, b.height) || 1)
+  const left = Math.max(a.x, b.x)
+  const right = Math.min(a.x + a.width, b.x + b.width)
+  const horizontal = right > left ? (right - left) / (Math.min(a.width, b.width) || 1) : 0
+  return vertical * 0.7 + Math.min(horizontal, 1) * 0.3
+}
+
+function wordInside(word: OcrWordBox, box: OcrWordBox): boolean {
+  const centerX = word.x + word.width / 2
+  const centerY = word.y + word.height / 2
+  return (
+    centerX >= box.x &&
+    centerX <= box.x + box.width &&
+    centerY >= box.y &&
+    centerY <= box.y + box.height
+  )
+}
+
+/** 混排行：汉字词保留中文引擎结果，拉丁词改用英文引擎的词框结果（重叠的中文误读直接丢弃） */
+function mergeMixedLine(zhLine: OcrLineBox, enLine: OcrLineBox): string {
+  const latinWords = enLine.words.filter(
+    (word) => !HAN_PATTERN.test(word.text) && LATIN_PATTERN.test(word.text),
+  )
+  const kept = zhLine.words.filter((word) => !latinWords.some((box) => wordInside(word, box)))
+  const tokens = [...kept, ...latinWords].sort((a, b) => a.x - b.x || a.y - b.y)
+  const merged = tokens.map((word) => word.text).join(' ')
+  return HAN_PATTERN.test(merged) ? merged : zhLine.text
+}
+
+/**
+ * 双引擎合并规则：
+ * 1. 行对齐：按垂直重叠率（70%）+ 水平重叠率（30%）打分，≥0.5 视为同一行。
+ * 2. 纯中文行用中文引擎；纯拉丁行（含字母/数字且无汉字）用英文引擎。
+ * 3. 中英混排行按词框合并：英文引擎的拉丁词替换同位置的中文误读，其余保留中文词。
+ * 4. 中文引擎漏掉的纯拉丁行，若与任何中文行都不重叠，则补回并按 y/x 排序。
+ */
+export function mergeOcrLines(zhLines: OcrLineBox[], enLines: OcrLineBox[] | null): string {
+  if (!enLines || enLines.length === 0) {
+    return zhLines.map((line) => line.text).filter(Boolean).join('\n')
+  }
+  const matched = new Set<number>()
+  const output: Array<{ x: number; y: number; text: string }> = []
+  for (const zhLine of zhLines) {
+    let bestIndex = -1
+    let bestScore = 0
+    enLines.forEach((enLine, index) => {
+      const score = lineOverlap(zhLine, enLine)
+      if (score > bestScore) {
+        bestScore = score
+        bestIndex = index
+      }
+    })
+    const enLine = bestScore >= 0.5 ? enLines[bestIndex] : null
+    if (enLine) matched.add(bestIndex)
+    let text = zhLine.text
+    if (!text) {
+      text = enLine?.text ?? ''
+    } else if (!HAN_PATTERN.test(text) && LATIN_PATTERN.test(text) && enLine?.text) {
+      text = enLine.text
+    } else if (HAN_PATTERN.test(text) && LATIN_PATTERN.test(text) && enLine) {
+      text = mergeMixedLine(zhLine, enLine)
+    }
+    if (text) output.push({ x: zhLine.x, y: zhLine.y, text })
+  }
+  enLines.forEach((enLine, index) => {
+    if (matched.has(index) || !enLine.text) return
+    if (!LATIN_PATTERN.test(enLine.text) || HAN_PATTERN.test(enLine.text)) return
+    if (zhLines.some((zhLine) => lineOverlap(zhLine, enLine) >= 0.5)) return
+    output.push({ x: enLine.x, y: enLine.y, text: enLine.text })
+  })
+  output.sort((a, b) => a.y - b.y || a.x - b.x)
+  return output.map((line) => line.text).join('\n')
 }
 
 const OCR_SCRIPT = `
@@ -102,6 +208,39 @@ function Await($WinRtTask, [Type]$ResultType) {
   $netTask.Result
 }
 
+function Get-OcrLines($engine, $bitmap) {
+  $result = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
+  $lines = New-Object System.Collections.ArrayList
+  foreach ($line in $result.Lines) {
+    $words = New-Object System.Collections.ArrayList
+    $minX = [double]::MaxValue; $minY = [double]::MaxValue; $maxX = 0; $maxY = 0
+    foreach ($word in $line.Words) {
+      $rect = $word.BoundingRect
+      $null = $words.Add([PSCustomObject]@{
+        t = $word.Text
+        x = [Math]::Round($rect.X, 1)
+        y = [Math]::Round($rect.Y, 1)
+        w = [Math]::Round($rect.Width, 1)
+        h = [Math]::Round($rect.Height, 1)
+      })
+      if ($rect.X -lt $minX) { $minX = $rect.X }
+      if ($rect.Y -lt $minY) { $minY = $rect.Y }
+      if (($rect.X + $rect.Width) -gt $maxX) { $maxX = $rect.X + $rect.Width }
+      if (($rect.Y + $rect.Height) -gt $maxY) { $maxY = $rect.Y + $rect.Height }
+    }
+    if ($words.Count -eq 0) { $minX = 0; $minY = 0; $maxX = 0; $maxY = 0 }
+    $null = $lines.Add([PSCustomObject]@{
+      t = $line.Text
+      x = [Math]::Round($minX, 1)
+      y = [Math]::Round($minY, 1)
+      w = [Math]::Round($maxX - $minX, 1)
+      h = [Math]::Round($maxY - $minY, 1)
+      ws = @($words)
+    })
+  }
+  return , $lines
+}
+
 try {
   $imagePath = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__IMAGE_PATH_B64__'))
   $imagePath = [IO.Path]::GetFullPath($imagePath)
@@ -110,26 +249,60 @@ try {
   $decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
   $bitmap = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
 
-  $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
-  if (-not $engine) {
-    $langs = [Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages
-    $pick = $langs | Where-Object { $_.LanguageTag -like 'zh-Hans*' } | Select-Object -First 1
-    if (-not $pick) { $pick = $langs | Where-Object { $_.LanguageTag -like 'zh*' } | Select-Object -First 1 }
-    if (-not $pick) { $pick = $langs | Select-Object -First 1 }
-    if (-not $pick) { throw 'NO_OCR_LANGUAGE' }
-    $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($pick)
-  }
-  if (-not $engine) { throw 'NO_OCR_LANGUAGE' }
+  $langs = [Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages
+  $zhPick = $langs | Where-Object { $_.LanguageTag -like 'zh-Hans*' } | Select-Object -First 1
+  if (-not $zhPick) { $zhPick = $langs | Where-Object { $_.LanguageTag -like 'zh*' } | Select-Object -First 1 }
+  if (-not $zhPick) { $zhPick = $langs | Select-Object -First 1 }
+  if (-not $zhPick) { throw 'NO_OCR_LANGUAGE' }
+  $zhEngine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($zhPick)
+  if (-not $zhEngine) { throw 'NO_OCR_LANGUAGE' }
 
-  $result = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
-  $text = ($result.Lines | ForEach-Object { $_.Text }) -join ([string][char]10)
-  $payload = [PSCustomObject]@{ language = $engine.RecognizerLanguage.LanguageTag; text = $text } | ConvertTo-Json -Compress
+  $enPick = $langs | Where-Object { $_.LanguageTag -eq 'en-US' } | Select-Object -First 1
+  $enEngine = $null
+  if ($enPick) { $enEngine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($enPick) }
+
+  $zhLines = Get-OcrLines $zhEngine $bitmap
+  $enLines = $null
+  if ($enEngine) { $enLines = Get-OcrLines $enEngine $bitmap }
+  $payload = [PSCustomObject]@{
+    language = $zhEngine.RecognizerLanguage.LanguageTag
+    zh       = @($zhLines)
+    en       = if ($enLines) { @($enLines) } else { $null }
+  } | ConvertTo-Json -Compress -Depth 6
   [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payload))
 } catch {
   [Console]::Error.WriteLine($_.Exception.Message)
   exit 1
 }
 `
+
+function toLineBoxes(value: unknown): OcrLineBox[] {
+  const items: unknown[] = Array.isArray(value) ? value : value ? [value] : []
+  return items
+    .map((raw) => {
+      const line = raw as Record<string, unknown>
+      const wordsRaw: unknown[] = Array.isArray(line.ws) ? line.ws : line.ws ? [line.ws] : []
+      const words = wordsRaw
+        .map((item) => item as Record<string, unknown>)
+        .map((word) => ({
+          text: typeof word.t === 'string' ? word.t : '',
+          x: Number(word.x) || 0,
+          y: Number(word.y) || 0,
+          width: Number(word.w) || 0,
+          height: Number(word.h) || 0,
+        }))
+        .filter((word) => word.text.length > 0)
+      return {
+        text: typeof line.t === 'string' ? line.t : '',
+        x: Number(line.x) || 0,
+        y: Number(line.y) || 0,
+        width: Number(line.w) || 0,
+        height: Number(line.h) || 0,
+        words,
+      }
+    })
+    .filter((line) => line.text.length > 0 || line.words.length > 0)
+}
 
 function ocrTempDir(): string {
   return join(app.getPath('userData'), 'ocr')
@@ -198,15 +371,25 @@ class OcrService {
       const { stdout } = await execFileAsync(
         'powershell.exe',
         ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
-        { timeout: OCR_TIMEOUT_MS, windowsHide: true, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8' },
+        { timeout: OCR_TIMEOUT_MS, windowsHide: true, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
       )
       const payload = stdout.trim().split(/\r?\n/).filter(Boolean).pop()
       if (!payload) throw new Error('OCR 没有返回结果')
       const parsed = JSON.parse(Buffer.from(payload, 'base64').toString('utf8')) as {
         language?: unknown
         text?: unknown
+        zh?: unknown
+        en?: unknown
       }
-      const text = typeof parsed.text === 'string' ? normalizeOcrText(parsed.text) : ''
+      const zhLines = toLineBoxes(parsed.zh)
+      const enLines = parsed.en ? toLineBoxes(parsed.en) : null
+      const rawText =
+        zhLines.length > 0
+          ? mergeOcrLines(zhLines, enLines)
+          : typeof parsed.text === 'string'
+            ? parsed.text
+            : ''
+      const text = normalizeOcrText(rawText)
       const language = typeof parsed.language === 'string' ? parsed.language : ''
       return { text, language }
     } catch (error) {

@@ -86,8 +86,8 @@ scripts/
 
 1. `npm run typecheck` —— 两份 tsconfig（node / web）均零报错
 2. `npm run build` —— 产出 `out/main`、`out/preload`、`out/renderer`（含独立 `pin.html`）
-3. `npm run selftest` —— 要求末行输出 `[selftest] ALL PASS`（最近一次开发态实跑：100 项 PASS + 7 项 INFO，覆盖主窗首页/状态条/设置三页/图标预览、工具栏 6 动作（含独立贴图、确定复制、长图入口/续采/去重复制）、拼接核心（重叠行数/无重叠追加/颜色 round-trip/高度上限）、双击复制、保存、贴图创建/尺寸/位置/1:1/滚轮缩放与百分比/Ctrl+0/四角手柄/拖拽不回弹/8 向缩放/单张关闭/多贴图、遮罩内 OCR 侧栏动态选边/编辑/字数/手动复制/关闭/迟到结果丢弃、贴图快捷键注册、Windows OCR 识别）。验证 dev 的 http 页面可跑 `npx electron-vite dev -- --selftest`（`--` 之后的参数会透传给 Electron）
-4. 改动涉及打包、图标或依赖时，追加 `npm run pack`，并对 `dist/win-unpacked/snip-ocr.exe --selftest` 再跑一次验收（最近一次打包版实跑：90 项 PASS + 7 项 INFO，含「运行数据位于程序目录 data/」「旧 %APPDATA% 已清理」「贴图走 snip-pin://」断言）。改动涉及安装/数据目录时，还要做一次静默安装 → 运行 → 静默卸载，确认安装目录、`%APPDATA%\snip-ocr`、快捷方式与卸载注册表项全部清除
+3. `npm run selftest` —— 要求末行输出 `[selftest] ALL PASS`（最近一次开发态实跑：105 项 PASS + 8 项 INFO，其中 1 条 INFO 为 `Alt+A` 被占用时的注册结果；覆盖主窗首页/状态条/设置三页/图标预览、工具栏 6 动作（含独立贴图、确定复制、长图入口/续采/去重复制）、拼接核心（重叠行数/无重叠追加/颜色 round-trip/高度上限）、双击复制、保存、贴图创建/尺寸/位置/1:1/滚轮缩放与百分比/Ctrl+0/四角手柄/拖拽不回弹/8 向缩放/单张关闭/多贴图、遮罩内 OCR 侧栏动态选边/编辑/字数/手动复制/关闭/迟到结果丢弃、贴图快捷键注册、Windows OCR 识别）。验证 dev 的 http 页面可跑 `npx electron-vite dev -- --selftest`（`--` 之后的参数会透传给 Electron）
+4. 改动涉及打包、图标或依赖时，追加 `npm run pack`，并对 `dist/win-unpacked/snip-ocr.exe --selftest` 再跑一次验收（最近一次打包版实跑：90 项 PASS + 7 项 INFO，未核实（本轮未重跑打包态），含「运行数据位于程序目录 data/」「旧 %APPDATA% 已清理」「贴图走 snip-pin://」断言）。改动涉及安装/数据目录时，还要做一次静默安装 → 运行 → 静默卸载，确认安装目录、`%APPDATA%\snip-ocr`、快捷方式与卸载注册表项全部清除
    打包环境注意：无外网时 `@electron/get` 会卡在校验 Electron 缓存，需设 `ELECTRON_MIRROR`（本机用 `https://npmmirror.com/mirrors/electron/`）；若 IDE/索引器锁住新解压的 `default_app.asar` 导致 `EPERM/EBUSY`，把输出指到工作区外（`npx electron-builder --config.directories.output=<临时目录>`）再拷回 `dist/`。
 
 任何一项失败先修复再继续；新增交互要同步在 [src/main/selftest.ts](./src/main/selftest.ts) 补断言，不接受只靠人工点击。

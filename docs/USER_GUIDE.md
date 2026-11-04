@@ -39,7 +39,7 @@ npm run dist       # 只解包，快速验证打包
 npm run pack       # 安装包输出到 dist/
 ```
 
-**预期结果**：`npm run selftest` 末行 `[selftest] ALL PASS`（开发态实测 100 PASS + 7 INFO；打包版 90 PASS + 7 INFO）。
+**预期结果**：`npm run selftest` 末行 `[selftest] ALL PASS`（开发态实测 105 PASS + 8 INFO，其中 1 条 INFO 是 `Alt+A` 被其它应用占用，未被占用时为 105 PASS + 7 INFO；打包版 90 PASS + 7 INFO 为历史记录，未核实）。
 
 ---
 
