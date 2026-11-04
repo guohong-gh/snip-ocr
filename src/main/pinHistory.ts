@@ -1,0 +1,233 @@
+import { app, nativeImage, screen } from 'electron'
+import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
+import { basename, join } from 'node:path'
+import type { PinHistoryItem } from '@shared/ipc'
+import type { PinCaptureInput } from './pin'
+
+/** 默认保留最近 50 条，超出按最旧淘汰；不提供设置项 */
+const PIN_HISTORY_LIMIT = 50
+const INDEX_FILE = 'history.json'
+const FILE_PREFIX = 'history-'
+/** 缩略图最长边（像素），列表按 64×42 DIP 展示，足够 2x 屏清晰 */
+const THUMB_MAX_SIDE = 192
+
+interface StoredPinHistoryItem {
+  id: string
+  createdAt: number
+  width: number
+  height: number
+  /** 原图文件名，相对 pinHistoryDir() */
+  file: string
+  /** 缩略图文件名，相对 pinHistoryDir() */
+  thumb: string
+}
+
+export function pinHistoryDir(): string {
+  return join(app.getPath('userData'), 'pin-history')
+}
+
+let loaded: StoredPinHistoryItem[] | null = null
+let queue: Promise<unknown> = Promise.resolve()
+const changeListeners = new Set<() => void>()
+
+export function onPinHistoryChange(listener: () => void): () => void {
+  changeListeners.add(listener)
+  return () => {
+    changeListeners.delete(listener)
+  }
+}
+
+/** 串行化读写，避免并发贴图时 history.json 互相覆盖 */
+function enqueue<T>(task: () => Promise<T>): Promise<T> {
+  const next = queue.then(task, task)
+  queue = next.catch(() => undefined)
+  return next
+}
+
+function isSafeFileName(name: unknown): name is string {
+  return (
+    typeof name === 'string' &&
+    name === basename(name) &&
+    name.startsWith(FILE_PREFIX) &&
+    name.endsWith('.png')
+  )
+}
+
+function isValidItem(value: unknown): value is StoredPinHistoryItem {
+  if (typeof value !== 'object' || value === null) return false
+  const item = value as Record<string, unknown>
+  return (
+    typeof item.id === 'string' &&
+    typeof item.createdAt === 'number' &&
+    Number.isFinite(item.createdAt) &&
+    typeof item.width === 'number' &&
+    Number.isFinite(item.width) &&
+    typeof item.height === 'number' &&
+    Number.isFinite(item.height) &&
+    isSafeFileName(item.file) &&
+    isSafeFileName(item.thumb)
+  )
+}
+
+async function removeFiles(files: string[]): Promise<void> {
+  await Promise.all(
+    files.map((file) => unlink(join(pinHistoryDir(), file)).catch(() => undefined)),
+  )
+}
+
+/** 清理索引未引用的残留文件（写入中断、旧版本遗留），不动索引内的历史 */
+async function cleanupOrphans(items: StoredPinHistoryItem[]): Promise<void> {
+  const keep = new Set(items.flatMap((item) => [item.file, item.thumb]))
+  try {
+    const files = await readdir(pinHistoryDir())
+    await removeFiles(
+      files.filter((file) => file.startsWith(FILE_PREFIX) && file.endsWith('.png') && !keep.has(file)),
+    )
+  } catch {
+    // 目录还不存在时无需清理
+  }
+}
+
+async function saveIndex(items: StoredPinHistoryItem[]): Promise<void> {
+  await mkdir(pinHistoryDir(), { recursive: true })
+  const file = join(pinHistoryDir(), INDEX_FILE)
+  const tmp = `${file}.tmp`
+  await writeFile(tmp, JSON.stringify({ version: 1, items }, null, 2), 'utf-8')
+  await rename(tmp, file)
+}
+
+async function ensureLoaded(): Promise<StoredPinHistoryItem[]> {
+  if (loaded) return loaded
+  const dir = pinHistoryDir()
+  let items: StoredPinHistoryItem[] = []
+  try {
+    const file = join(dir, INDEX_FILE)
+    if (existsSync(file)) {
+      const raw = JSON.parse(await readFile(file, 'utf-8')) as { items?: unknown }
+      if (Array.isArray(raw.items)) items = raw.items.filter(isValidItem)
+    }
+  } catch {
+    items = []
+  }
+
+  // 原图丢失的记录不再展示；超过上限的旧记录淘汰
+  const valid = items.filter((item) => existsSync(join(dir, item.file)))
+  const kept = valid.slice(0, PIN_HISTORY_LIMIT)
+  const dropped = valid.slice(PIN_HISTORY_LIMIT)
+  loaded = kept
+  await cleanupOrphans(kept)
+  if (dropped.length > 0 || kept.length !== items.length) {
+    await removeFiles(dropped.flatMap((item) => [item.file, item.thumb]))
+    await saveIndex(kept)
+  }
+  return kept
+}
+
+function makeThumbnail(buffer: Buffer): Buffer {
+  const image = nativeImage.createFromBuffer(buffer)
+  const size = image.getSize()
+  if (size.width <= 0 || size.height <= 0) return buffer
+  const ratio = Math.min(1, THUMB_MAX_SIDE / Math.max(size.width, size.height))
+  if (ratio >= 1) return image.toPNG()
+  const width = Math.max(1, Math.round(size.width * ratio))
+  const height = Math.max(1, Math.round(size.height * ratio))
+  return image.resize({ width, height, quality: 'good' }).toPNG()
+}
+
+/** 贴图窗口成功显示后调用；调用方需保证不在历史重贴路径上重复写入 */
+export function recordPinHistory(buffer: Buffer, width: number, height: number): Promise<void> {
+  return enqueue(async () => {
+    const items = await ensureLoaded()
+    const dir = pinHistoryDir()
+    const id = randomUUID()
+    const file = `${FILE_PREFIX}${id}.png`
+    const thumb = `${FILE_PREFIX}${id}-thumb.png`
+
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, file), buffer)
+    await writeFile(join(dir, thumb), makeThumbnail(buffer))
+
+    items.unshift({ id, createdAt: Date.now(), width, height, file, thumb })
+    const dropped = items.splice(PIN_HISTORY_LIMIT)
+    await removeFiles(dropped.flatMap((item) => [item.file, item.thumb]))
+    await saveIndex(items)
+    for (const listener of changeListeners) listener()
+  })
+}
+
+export function listPinHistory(): Promise<PinHistoryItem[]> {
+  return enqueue(async () => {
+    const items = await ensureLoaded()
+    const dir = pinHistoryDir()
+    const result: PinHistoryItem[] = []
+    for (const item of items) {
+      const thumb = await readFile(join(dir, item.thumb)).catch(() => null)
+      if (!thumb) continue
+      result.push({
+        id: item.id,
+        createdAt: item.createdAt,
+        imageWidth: item.width,
+        imageHeight: item.height,
+        thumbUrl: `data:image/png;base64,${thumb.toString('base64')}`,
+      })
+    }
+    return result
+  })
+}
+
+export function deletePinHistory(id: string): Promise<void> {
+  return enqueue(async () => {
+    const items = await ensureLoaded()
+    const index = items.findIndex((item) => item.id === id)
+    if (index < 0) return
+    const [removed] = items.splice(index, 1)
+    await removeFiles([removed.file, removed.thumb])
+    await saveIndex(items)
+  })
+}
+
+export function clearPinHistory(): Promise<void> {
+  return enqueue(async () => {
+    const items = await ensureLoaded()
+    if (items.length === 0) return
+    await removeFiles(items.flatMap((item) => [item.file, item.thumb]))
+    items.length = 0
+    await saveIndex(items)
+  })
+}
+
+/**
+ * 历史重贴：读取原图，并把落点放在当前鼠标所在的显示器上（以光标为中心，夹在屏幕内）。
+ * 不经过截图流程，所以没有选区，只有图片尺寸与光标位置。
+ */
+export function readPinHistoryInput(id: string): Promise<PinCaptureInput | null> {
+  return enqueue(async () => {
+    const items = await ensureLoaded()
+    const item = items.find((entry) => entry.id === id)
+    if (!item) return null
+    let buffer: Buffer
+    try {
+      buffer = await readFile(join(pinHistoryDir(), item.file))
+    } catch {
+      return null
+    }
+
+    const point = screen.getCursorScreenPoint()
+    const display = screen.getDisplayNearestPoint(point)
+    const scaleFactor = display.scaleFactor > 0 ? display.scaleFactor : 1
+    const width = item.width / scaleFactor
+    const height = item.height / scaleFactor
+    const clamp = (value: number, max: number): number => Math.max(0, Math.min(value, max))
+    const selection = {
+      x: clamp(point.x - display.bounds.x - width / 2, display.bounds.width - width),
+      y: clamp(point.y - display.bounds.y - height / 2, display.bounds.height - height),
+    }
+    return {
+      buffer,
+      bounds: { ...selection, width, height },
+      display: { ...display.bounds, scaleFactor },
+    }
+  })
+}

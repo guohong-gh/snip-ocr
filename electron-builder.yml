@@ -1,0 +1,44 @@
+appId: local.snip.ocr
+productName: snip-ocr
+directories:
+  output: dist
+  buildResources: build
+npmRebuild: false
+files:
+  - '!src/**'
+  - '!scripts/**'
+  - '!release/**'
+  # 输出目录改用 --config.directories.output 时，旧的 dist 不能被当作应用资源打进 asar
+  - '!dist/**'
+  - '!.tmp/**'
+  # build/ 是 electron-builder 的 buildResources，运行时图标放 assets/
+  - '!build/**'
+  - '!.vscode/**'
+  - '!electron.vite.config.*'
+  - '!tsconfig*.json'
+  - '!electron-builder.yml'
+  - '!README.md'
+  - '!AGENTS.md'
+  - '!QODER.md'
+  - '!PRODUCT.md'
+  - '!DESIGN.md'
+  - '!.impeccable/**'
+  - '!package-lock.json'
+  - '!*.log'
+asar: true
+asarUnpack:
+  - '**/*.node'
+win:
+  executableName: snip-ocr
+  icon: build/icon.ico
+  target:
+    - nsis
+    - portable
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  artifactName: snip-ocr-Setup-${version}.${ext}
+portable:
+  artifactName: snip-ocr-Portable-${version}.${ext}

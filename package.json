@@ -1,0 +1,36 @@
+{
+  "name": "snip-ocr",
+  "version": "0.1.0",
+  "description": "本地截图工具 - 系统截图平替（截图/复制/保存/贴图/本地识字）",
+  "main": "./out/main/index.js",
+  "author": "snip-ocr",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "icon": "node scripts/gen-icon.mjs",
+    "prebuild": "node scripts/gen-icon.mjs",
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "build": "npm run typecheck && electron-vite build",
+    "selftest": "npm run build && electron . --selftest",
+    "dist": "npm run build && electron-builder --dir",
+    "pack": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "electron-screenshots": "^0.6.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^33.4.11",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.5"
+  }
+}
