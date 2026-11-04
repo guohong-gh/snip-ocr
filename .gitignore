@@ -7,4 +7,5 @@ data/
 *.log
 .archify/
 .impeccable/
+.trae-html-share-packages/
 .DS_Store
