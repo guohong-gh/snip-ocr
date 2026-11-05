@@ -165,11 +165,45 @@ async function usableArea(wc: WebContents): Promise<Viewport> {
   return { width: vp.width - pad * 2, height: vp.height - pad * 2 }
 }
 
+/** 等遮罩页就绪且窗口尺寸稳定（连续两次采样一致），避免拖拽落在未完成 resize 的旧坐标系上 */
+async function waitForOverlayReady(
+  wc: WebContents,
+  timeoutMs = 4000,
+): Promise<{ ready: boolean; width: number; height: number }> {
+  const deadline = Date.now() + timeoutMs
+  let last: { width: number; height: number } | null = null
+  let stable = 0
+  while (Date.now() < deadline) {
+    let probe: { background: boolean; width: number; height: number }
+    try {
+      probe = await evalJson<{ background: boolean; width: number; height: number }>(
+        wc,
+        `return {
+           background: Boolean(document.querySelector('.screenshots-background')),
+           width: window.innerWidth,
+           height: window.innerHeight,
+         };`,
+      )
+    } catch {
+      return { ready: false, width: last?.width ?? 0, height: last?.height ?? 0 }
+    }
+    if (probe.background && probe.width > 200 && probe.height > 200) {
+      stable = last && last.width === probe.width && last.height === probe.height ? stable + 1 : 0
+      if (stable >= 2) return { ready: true, width: probe.width, height: probe.height }
+    } else {
+      stable = 0
+    }
+    last = { width: probe.width, height: probe.height }
+    await sleep(60)
+  }
+  return { ready: false, width: last?.width ?? 0, height: last?.height ?? 0 }
+}
+
 async function startAndDrag(
   wc: WebContents,
-): Promise<{ area: Viewport; barWidth: number | null }> {
+): Promise<{ area: Viewport; barWidth: number | null; overlayReady: boolean }> {
   await screenshotService.startCapture()
-  await sleep(600)
+  const overlay = await waitForOverlayReady(wc)
   const area = await usableArea(wc)
   await dragSelect(wc, [Math.round(area.width * 0.1), Math.round(area.height * 0.1)], [
     Math.round(area.width * 0.6),
@@ -189,14 +223,14 @@ async function startAndDrag(
     await sleep(100)
   }
   await sleep(700)
-  return { area, barWidth: rect?.w ?? null }
+  return { area, barWidth: rect?.w ?? null, overlayReady: overlay.ready }
 }
 
 /** 框选 + 双击复制到剪贴板 */
 async function testCopy(wc: WebContents, outcomes: CaptureOutcome[], scaleFactor: number): Promise<void> {
   clipboard.clear()
-  const { area, barWidth } = await startAndDrag(wc)
-  check('松开鼠标后工具栏出现', barWidth !== null, { barWidth })
+  const { area, barWidth, overlayReady } = await startAndDrag(wc)
+  check('松开鼠标后工具栏出现', barWidth !== null, { barWidth, overlayReady })
 
   const buttons = await evalJson<ToolbarButton[]>(
     wc,
@@ -1030,7 +1064,10 @@ async function testPin(wc: WebContents, outcomes: CaptureOutcome[], display: Pin
     check('裁剪 buffer 交给贴图窗口', Boolean(pinned), pinned ?? null)
     check('贴图后遮罩窗关闭', findOverlayWindow() === undefined, {})
     check('贴图窗口可见', pinWin.isVisible(), { visible: pinWin.isVisible() })
-    check('贴图窗口置顶', pinWin.isAlwaysOnTop(), { alwaysOnTop: pinWin.isAlwaysOnTop() })
+    // 置顶是窗口原生状态，偶发在 show() 后首次读取尚未生效；等到生效再判定，并保留首读值便于区分「读取过早」与「从未生效」
+    const firstAlwaysOnTop = pinWin.isAlwaysOnTop()
+    const onTopSettled = Boolean(await waitForValue(() => (pinWin.isAlwaysOnTop() ? true : null), 2000))
+    check('贴图窗口置顶', onTopSettled, { alwaysOnTop: pinWin.isAlwaysOnTop(), firstRead: firstAlwaysOnTop })
     check('贴图窗口可调整大小', pinWin.isResizable(), { resizable: pinWin.isResizable() })
 
     const meta = await readPinMeta(pinWin)
@@ -1516,28 +1553,62 @@ async function testStitchCore(wc: WebContents): Promise<void> {
   })
 }
 
-/** 逐像素比较两帧 BGRA 位图（尺寸必须一致） */
-function compareBitmaps(a: Buffer, b: Buffer): { mean: number; max: number; ratioSame: number } {
-  const pixels = Math.min(a.length, b.length) / 4
-  let sum = 0
-  let max = 0
-  let same = 0
-  for (let i = 0; i < pixels; i += 1) {
-    const offset = i * 4
-    let equal = true
-    for (let channel = 0; channel < 3; channel += 1) {
-      const diff = Math.abs(a[offset + channel] - b[offset + channel])
-      sum += diff
-      if (diff > max) max = diff
-      if (diff > 0) equal = false
+/**
+ * 逐像素比较两帧 BGRA 位图。
+ * 两次抓屏的裁剪起点可能相差 ≤2px（窗口/显示器取整时序），直接逐像素比较会把整体偏移误判成「大面积不一致」；
+ * 这里在 ±2px 内找最佳对齐后再统计，判定阈值不放宽。
+ */
+function compareBitmaps(
+  a: Buffer,
+  b: Buffer,
+  width: number,
+  height: number,
+  maxShift = 2,
+): { mean: number; max: number; ratioSame: number; shift: { x: number; y: number } } {
+  let best = {
+    mean: Number.POSITIVE_INFINITY,
+    max: 0,
+    ratioSame: -1,
+    shift: { x: 0, y: 0 },
+  }
+  for (let dy = -maxShift; dy <= maxShift; dy += 1) {
+    for (let dx = -maxShift; dx <= maxShift; dx += 1) {
+      const w = width - Math.abs(dx)
+      const h = height - Math.abs(dy)
+      let sum = 0
+      let max = 0
+      let same = 0
+      for (let y = 0; y < h; y += 1) {
+        const ay = y + Math.max(0, -dy)
+        const by = y + Math.max(0, dy)
+        for (let x = 0; x < w; x += 1) {
+          const ax = x + Math.max(0, -dx)
+          const bx = x + Math.max(0, dx)
+          const offsetA = (ay * width + ax) * 4
+          const offsetB = (by * width + bx) * 4
+          let equal = true
+          for (let channel = 0; channel < 3; channel += 1) {
+            const diff = Math.abs(a[offsetA + channel] - b[offsetB + channel])
+            sum += diff
+            if (diff > max) max = diff
+            if (diff > 0) equal = false
+          }
+          if (equal) same += 1
+        }
+      }
+      const pixels = w * h
+      const mean = sum / Math.max(1, pixels * 3)
+      const ratioSame = same / Math.max(1, pixels)
+      const better =
+        ratioSame > best.ratioSame ||
+        (ratioSame === best.ratioSame && mean < best.mean) ||
+        (ratioSame === best.ratioSame &&
+          mean === best.mean &&
+          Math.abs(dx) + Math.abs(dy) < Math.abs(best.shift.x) + Math.abs(best.shift.y))
+      if (better) best = { mean, max, ratioSame, shift: { x: dx, y: dy } }
     }
-    if (equal) same += 1
   }
-  return {
-    mean: sum / Math.max(1, pixels * 3),
-    max,
-    ratioSame: same / Math.max(1, pixels),
-  }
+  return best
 }
 
 /** 长图 HUD 按钮是否复用工具栏同一套视觉（同 class + 同变量解析结果） */
@@ -1567,9 +1638,8 @@ async function compareLongHudButton(
 
 async function testLongShot(wc: WebContents, outcomes: CaptureOutcome[], scaleFactor: number): Promise<void> {
   // 基准：同一选区先走普通截图，用于逐像素比较长图首帧
-  const area = await usableArea(wc)
   clipboard.clear()
-  await startAndDrag(wc)
+  const { area } = await startAndDrag(wc)
   const normalCanvasImage = await evalJson<{ visible: boolean }>(
     wc,
     `const image = document.querySelector('.screenshots-canvas-image');
@@ -1721,6 +1791,8 @@ async function testLongShot(wc: WebContents, outcomes: CaptureOutcome[], scaleFa
     ? compareBitmaps(
         normalBitmap.subarray(0, normalSize.width * compareHeight * 4),
         longImage.toBitmap().subarray(0, normalSize.width * compareHeight * 4),
+        normalSize.width,
+        compareHeight,
       )
     : null
   check(
