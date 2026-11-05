@@ -6,6 +6,9 @@ export const OVERLAY_ACTION_PREFIX = '__SNIP_ACTION__'
 export const OVERLAY_COPY_PREFIX = '__SNIP_COPY__'
 
 export const OVERLAY_HUD_RECT_PREFIX = '__SNIP_HUD_RECT__'
+/** 侧栏「译成中文」请求（后接 base64 文本）；遮罩页只能通过 console 前缀与主进程通信 */
+export const OVERLAY_TRANSLATE_PREFIX = '__SNIP_TRANSLATE__'
+export const OVERLAY_TRANSLATE_STATUS_PREFIX = '__SNIP_TRANSLATE_STATUS__'
 const TOOL_ORDER: ToolKey[] = ['ocr', 'pin', 'save', 'longshot', 'cancel', 'confirm']
 
 export function overlayIcons(theme: IconTheme, customIconUrl: string | null): Record<ToolKey, string> {
@@ -383,6 +386,54 @@ body.snip-live-drag .screenshots-canvas {
   color: var(--snip-ink-3);
   cursor: not-allowed;
 }
+.snip-sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.snip-sidebar-translate {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--snip-rule-2);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--snip-ink-2);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease-out,
+    color 140ms ease-out;
+}
+.snip-sidebar-translate:hover:not(:disabled) {
+  border-color: var(--snip-signal);
+  color: var(--snip-signal);
+}
+.snip-sidebar-translate:disabled {
+  color: var(--snip-ink-3);
+  cursor: not-allowed;
+}
+.snip-sidebar-translate:focus-visible {
+  outline: 2px solid var(--snip-signal);
+  outline-offset: 2px;
+}
+.snip-sidebar-translation {
+  min-height: 0;
+  max-height: 30vh;
+  overflow: auto;
+  padding: 10px 14px;
+  border-top: 1px dashed var(--snip-rule);
+  background: var(--snip-plate);
+  color: var(--snip-ink);
+  font-size: 12.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+.snip-sidebar-translation[hidden] {
+  display: none;
+}
 @media (prefers-color-scheme: dark) {
   #snip-ocr-sidebar {
     --snip-paper: #191c1e;
@@ -496,6 +547,8 @@ function buildScript(icons: Record<ToolKey, string>): string {
   const LABELS = ${JSON.stringify(TOOL_LABELS)};
   const ACTION_PREFIX = ${JSON.stringify(OVERLAY_ACTION_PREFIX)};
   const COPY_PREFIX = ${JSON.stringify(OVERLAY_COPY_PREFIX)};
+  const TRANSLATE_PREFIX = ${JSON.stringify(OVERLAY_TRANSLATE_PREFIX)};
+  const TRANSLATE_STATUS_PREFIX = ${JSON.stringify(OVERLAY_TRANSLATE_STATUS_PREFIX)};
   const HUD_PREFIX = ${JSON.stringify(OVERLAY_HUD_RECT_PREFIX)};
 
   if (!window.__snipOverlayInstalled) {
@@ -519,10 +572,15 @@ function buildScript(icons: Record<ToolKey, string>): string {
       window.screenshots.on('capture', () => {
         hideSidebar();
         resetSidebarDrag();
+        resetTranslation();
+        requestTranslateStatus();
         window.__snipCaptureSeq = (window.__snipCaptureSeq || 0) + 1;
         setLongShotCount(0);
       });
       window.screenshots.on('ocr-result', (payload) => applyOcrResult(payload));
+      window.screenshots.on('translate-status', (payload) => applyTranslateStatus(payload));
+      window.screenshots.on('translate-result', (payload) => applyTranslateResult(payload));
+      requestTranslateStatus();
     }
   }
 
@@ -536,15 +594,21 @@ function buildScript(icons: Record<ToolKey, string>): string {
       '<button type="button" class="snip-sidebar-close" aria-label="关闭">×</button>',
       '</div>',
       '<textarea class="snip-sidebar-text" spellcheck="false" aria-label="OCR 识别结果" placeholder="识别结果会出现在这里"></textarea>',
+      '<div class="snip-sidebar-translation" hidden></div>',
       '<div class="snip-sidebar-status"></div>',
       '<div class="snip-sidebar-foot"><span class="snip-sidebar-count">0 字</span>',
-      '<button type="button" class="snip-sidebar-copy" disabled>复制</button></div>'
+      '<span class="snip-sidebar-actions">',
+      '<button type="button" class="snip-sidebar-translate" disabled title="正在检查翻译插件…">译成中文</button>',
+      '<button type="button" class="snip-sidebar-copy" disabled>复制</button>',
+      '</span></div>'
     ].join('');
     document.body.appendChild(bar);
     const textarea = bar.querySelector('.snip-sidebar-text');
     const copyBtn = bar.querySelector('.snip-sidebar-copy');
+    const translateBtn = bar.querySelector('.snip-sidebar-translate');
     textarea.addEventListener('input', updateCount);
     copyBtn.addEventListener('click', copySidebarText);
+    translateBtn.addEventListener('click', translateSidebarText);
     bar.querySelector('.snip-sidebar-close').addEventListener('click', hideSidebar);
     // 只在标题条空白处起拖，textarea/复制/关闭的指针事件不受影响
     bar.querySelector('.snip-sidebar-head').addEventListener('pointerdown', (event) => {
@@ -561,6 +625,11 @@ function buildScript(icons: Record<ToolKey, string>): string {
   let discardOcr = false;
   let ocrTimer = 0;
   let longShotCount = 0;
+  /** null = 尚未收到主进程的插件状态；true/false = 已安装/未安装 */
+  let translateAvailable = null;
+  let translatePluginDir = '';
+  /** idle | loading | done | error */
+  let translateState = 'idle';
 
   function setLongShotCount(count) {
     longShotCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
@@ -662,6 +731,7 @@ function buildScript(icons: Record<ToolKey, string>): string {
     if (!bar) return;
     const value = bar.querySelector('.snip-sidebar-text').value || '';
     bar.querySelector('.snip-sidebar-count').textContent = value.length + ' 字';
+    refreshTranslateButton();
   }
   function setStatus(text, isError) {
     const bar = sidebar();
@@ -683,6 +753,7 @@ function buildScript(icons: Record<ToolKey, string>): string {
     const copyBtn = bar.querySelector('.snip-sidebar-copy');
     copyBtn.disabled = status !== 'ready' || !(text || '').trim();
     copyBtn.textContent = '复制';
+    resetTranslation();
     updateCount();
     bar.classList.add('show');
     positionSidebar();
@@ -723,6 +794,84 @@ function buildScript(icons: Record<ToolKey, string>): string {
     } catch {
       setStatus('复制失败', true);
     }
+  }
+  function requestTranslateStatus() {
+    try { console.log(TRANSLATE_STATUS_PREFIX); } catch {}
+  }
+  function applyTranslateStatus(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    translateAvailable = Boolean(payload.available);
+    translatePluginDir = String(payload.pluginDir || '');
+    refreshTranslateButton();
+  }
+  function resetTranslation() {
+    translateState = 'idle';
+    const bar = sidebar();
+    if (bar) {
+      const box = bar.querySelector('.snip-sidebar-translation');
+      if (box) {
+        box.textContent = '';
+        box.hidden = true;
+      }
+    }
+    refreshTranslateButton();
+  }
+  function refreshTranslateButton() {
+    const bar = sidebar();
+    if (!bar) return;
+    const btn = bar.querySelector('.snip-sidebar-translate');
+    if (!btn) return;
+    const lang = (bar.querySelector('.snip-sidebar-lang').textContent || '').trim();
+    const text = (bar.querySelector('.snip-sidebar-text').value || '').trim();
+    const english = lang.toLowerCase().startsWith('en');
+    let reason = '';
+    if (translateAvailable !== true) {
+      reason = translateAvailable === false ? '未安装翻译插件' : '正在检查翻译插件…';
+    } else if (sidebarStatus !== 'ready' || !text) {
+      reason = '暂无可翻译的文本';
+    } else if (!english) {
+      reason = '暂不支持中译英';
+    }
+    const busy = translateState === 'loading';
+    btn.disabled = busy || Boolean(reason);
+    btn.textContent = busy ? '翻译中…' : '译成中文';
+    btn.title = reason || (translateState === 'done' ? '重新翻译' : '本地英译中，不联网');
+    if (sidebarStatus !== 'ready') return;
+    if (translateAvailable === false) {
+      setStatus('未安装翻译插件：' + (translatePluginDir || 'plugins\\translate-locally'), false);
+    } else if (translateState === 'idle' && lang && !english) {
+      setStatus('暂不支持中译英', false);
+    }
+  }
+  function translateSidebarText() {
+    const bar = sidebar();
+    if (!bar || translateState === 'loading') return;
+    const value = (bar.querySelector('.snip-sidebar-text').value || '').trim();
+    if (!value) return;
+    translateState = 'loading';
+    setStatus('本地翻译中…', false);
+    refreshTranslateButton();
+    try {
+      console.log(TRANSLATE_PREFIX + btoa(unescape(encodeURIComponent(value))));
+    } catch {
+      translateState = 'error';
+      setStatus('翻译请求发送失败', true);
+      refreshTranslateButton();
+    }
+  }
+  function applyTranslateResult(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    const bar = sidebar();
+    translateState = payload.ok ? 'done' : 'error';
+    if (payload.ok && bar) {
+      const box = bar.querySelector('.snip-sidebar-translation');
+      box.textContent = String(payload.text || '');
+      box.hidden = !box.textContent.trim();
+      setStatus('已译成中文', false);
+    } else {
+      setStatus(String(payload.reason || '翻译失败'), true);
+    }
+    refreshTranslateButton();
   }
 
   function findLibraryButton(title) {

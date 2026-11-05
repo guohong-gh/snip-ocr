@@ -25,6 +25,10 @@ files:
   - '!.impeccable/**'
   - '!package-lock.json'
   - '!*.log'
+  # 可选离线翻译插件与实验产物不进包（插件由用户手动放置到 data/plugins/）
+  - '!plugins/**'
+  - '!.translate-a1/**'
+  - '!.translate-spike/**'
 asar: true
 asarUnpack:
   - '**/*.node'

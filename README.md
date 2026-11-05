@@ -91,6 +91,28 @@ npm run pack       # 生成安装包 → dist/
 - 遮罩内 OCR 侧栏：可编辑文本、实时字数、手动复制、关闭；再次 OCR 覆盖内容。
 - 识别经 PowerShell/WinRT 桥执行，单任务串行、15 秒超时；临时图在 `<安装目录>\data\ocr\`，结束即删。
 
+## 离线翻译插件（可选，仅英译中）
+
+主包**不包含**任何翻译二进制；需要翻译时由用户手动安装约 105 MiB 的本地插件，主包体积零增量。
+
+- **支持方向**：仅 **英译中**（en→zh）。中译英在本引擎上不可用，侧栏按钮置灰并提示「暂不支持中译英」。
+- **安装**：把 `translate-locally` 目录放到 `<程序目录>\data\plugins\translate-locally\`（Portable 为便携 exe 旁的 `data\plugins\`；开发态放项目根 `plugins\`）。目录结构见 [plugins/README.txt](plugins/README.txt)。
+- **使用**：OCR 识别结果为英文时，侧栏底部「译成中文」按钮可用；译文显示在原文下方的只读区，原文保留可继续编辑或复制。
+- **约束**：只调用本地 exe 的 `-m/-i/-o`；不联网、不自动更新、不下载模型；单次 30 秒超时；文本上限 5000 字；失败时状态行显示原因且不覆盖原文。
+- **文件校验（SHA256，固定值）**：
+
+| 文件 | 字节 | SHA256 |
+| --- | --- | --- |
+| `translateLocally.exe` | 59,515,392 | `B7CB0F58369CC508812F049AF8C07ED59F2340E8007D31EE672DCEF450E53AA4` |
+| `models\enzh\config.intgemm8bitalpha.yml` | 370 | `E0A489893AF623F4F711A89DB38255523C60E60679F179CF85EB9232E4A4438D` |
+| `models\enzh\lex.50.50.enzh.s2t.bin` | 6,506,248 | `4A5E5827788060F1D718A8132B69440929387514A045796E9B77F935DB68C055` |
+| `models\enzh\model.enzh.intgemm.alphas.bin` | 42,992,955 | `CE4486F728641A36269A245248DCB53405E76D96D9EBA68DCB4172F29521E092` |
+| `models\enzh\model_info.json` | 161 | `71B6AAA4B8E9A7C1049AEACD45E9D80A10E560DFED6DF0B311748D6336D5C618` |
+| `models\enzh\srcvocab.enzh.spm` | 806,952 | `BD9B65504ACC6D9726DD281F7DEFC2ADB7C2C22D0688FE2F84697DE25197C8C5` |
+| `models\enzh\trgvocab.enzh.spm` | 772,004 | `ADED6993C36E440284D11CEC3F6B8AEF9C0E43188A772D80BE342A713ADF223D` |
+
+合计 7 文件 110,594,082 字节（约 105.5 MiB）。引擎输出为 GB18030，应用内已转码，插件文件不要改编码。
+
 ## 多显示器与高 DPI
 
 - 遮罩窗按鼠标所在显示器的 DIP 边界创建；取图用 `node-screenshots` 原生物理分辨率采集，失败回退 `desktopCapturer`。

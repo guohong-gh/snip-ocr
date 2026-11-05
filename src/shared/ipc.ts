@@ -30,6 +30,8 @@ export const IPC = {
   pinHistoryPin: 'snip:pin-history-pin',
   pinHistoryCopy: 'snip:pin-history-copy',
   pinHistorySave: 'snip:pin-history-save',
+  translateStatus: 'snip:translate-status',
+  translateToChinese: 'snip:translate-to-chinese',
 } as const
 
 export const DEFAULT_HOTKEY = 'Alt+A'
@@ -72,6 +74,16 @@ export interface UpdateCheckResult {
   status: 'latest'
   version: string
 }
+
+export interface TranslateStatus {
+  /** 插件是否已安装（exe 与 enzh 模型文件齐全） */
+  available: boolean
+  /** 插件目录绝对路径，未安装时用于提示放置位置 */
+  pluginDir: string
+}
+
+/** 仅英译中：失败时保留原文由调用方（侧栏）决定 */
+export type TranslateResult = { ok: true; text: string } | { ok: false; reason: string }
 
 export const PIN_RESIZE_DIRECTIONS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const
 
@@ -129,6 +141,8 @@ export interface SnipApi {
   setIconTheme(theme: IconTheme): Promise<SetHotkeyResult>
   pickCustomIcon(): Promise<SetHotkeyResult>
   checkUpdate(): Promise<UpdateCheckResult>
+  translateStatus(): Promise<TranslateStatus>
+  translateToChinese(text: string): Promise<TranslateResult>
   startCapture(): void
   pinLast(): void
   closeAllPins(): void

@@ -54,6 +54,8 @@ import {
 } from './pinHistory'
 import { screenshotService, trayIconPath, type CaptureOutcome } from './screenshot'
 import { runSelftest } from './selftest'
+import { translateStatus, translateToChinese } from './translate'
+import { OVERLAY_TRANSLATE_PREFIX, OVERLAY_TRANSLATE_STATUS_PREFIX } from './overlayUi'
 
 const APP_ID = 'local.snip.ocr'
 const SELFTEST = process.argv.includes('--selftest')
@@ -312,6 +314,28 @@ function checkUpdate(): Promise<UpdateCheckResult> {
   })
 }
 
+/** 遮罩侧栏无法直接调 IPC，只能通过 console 前缀回传；这里统一桥接并回送结果 */
+function registerOverlayTranslateBridge(): void {
+  app.on('web-contents-created', (_event, contents) => {
+    contents.on('console-message', (_event, _level, message) => {
+      if (message === OVERLAY_TRANSLATE_STATUS_PREFIX) {
+        contents.send('SCREENSHOTS:translate-status', translateStatus())
+        return
+      }
+      if (!message.startsWith(OVERLAY_TRANSLATE_PREFIX)) return
+      let text = ''
+      try {
+        text = Buffer.from(message.slice(OVERLAY_TRANSLATE_PREFIX.length), 'base64').toString('utf8')
+      } catch {
+        return
+      }
+      void translateToChinese(text).then((result) => {
+        if (!contents.isDestroyed()) contents.send('SCREENSHOTS:translate-result', result)
+      })
+    })
+  })
+}
+
 function createTray(): void {
   const image = nativeImage.createFromPath(trayIconPath())
   if (image.isEmpty()) console.error('[snip] tray icon missing at', trayIconPath())
@@ -323,6 +347,7 @@ function createTray(): void {
 function boot(): void {
   // Windows 上通知与托盘图标归属需要 AppUserModelID
   app.setAppUserModelId(APP_ID)
+  registerOverlayTranslateBridge()
   if (process.platform === 'darwin') app.dock?.hide()
 
   migrateLegacyData()
@@ -400,6 +425,11 @@ function boot(): void {
   })
   ipcMain.handle(IPC.pickCustomIcon, () => pickCustomIcon())
   ipcMain.handle(IPC.checkUpdate, () => checkUpdate())
+  ipcMain.handle(IPC.translateStatus, () => translateStatus())
+  ipcMain.handle(IPC.translateToChinese, (_event, text: unknown) => {
+    if (typeof text !== 'string') return { ok: false, reason: '参数无效' }
+    return translateToChinese(text)
+  })
 
   ipcMain.handle(IPC.pinHistoryList, () => listPinHistory())
   ipcMain.handle(IPC.pinHistoryDelete, async (_event, id: unknown) => {
@@ -423,7 +453,7 @@ function boot(): void {
   ipcMain.handle(IPC.pinHistoryPin, async (_event, id: unknown) => {
     if (typeof id !== 'string' || !id) return { ok: false, error: '参数无效' } satisfies SetHotkeyResult
     const input = await readPinHistoryInput(id)
-    if (!input) return { ok: false, error: '该贴图历史已不存在' } satisfies SetHotkeyResult
+    if (!input) return { ok: false, error: '该截图历史已不存在' } satisfies SetHotkeyResult
     try {
       await pinService.createPin(input, { recordHistory: false })
       return { ok: true } satisfies SetHotkeyResult

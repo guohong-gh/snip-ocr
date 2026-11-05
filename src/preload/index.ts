@@ -8,6 +8,8 @@ import {
   type SetHotkeyResult,
   type SnipApi,
   type SnipState,
+  type TranslateResult,
+  type TranslateStatus,
   type UpdateCheckResult,
 } from '@shared/ipc'
 
@@ -22,6 +24,9 @@ const api: SnipApi = {
     ipcRenderer.invoke(IPC.setIconTheme, theme) as Promise<SetHotkeyResult>,
   pickCustomIcon: () => ipcRenderer.invoke(IPC.pickCustomIcon) as Promise<SetHotkeyResult>,
   checkUpdate: () => ipcRenderer.invoke(IPC.checkUpdate) as Promise<UpdateCheckResult>,
+  translateStatus: () => ipcRenderer.invoke(IPC.translateStatus) as Promise<TranslateStatus>,
+  translateToChinese: (text: string) =>
+    ipcRenderer.invoke(IPC.translateToChinese, text) as Promise<TranslateResult>,
   startCapture: () => ipcRenderer.send(IPC.homeStartCapture),
   pinLast: () => ipcRenderer.send(IPC.pinLast),
   closeAllPins: () => ipcRenderer.send(IPC.pinCloseAll),

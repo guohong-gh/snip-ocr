@@ -1333,7 +1333,7 @@ textarea:focus-visible,
   object-fit: contain;
 }
 
-/* ---------- 贴图历史 ---------- */
+/* ---------- 截图历史 ---------- */
 
 .history-bar {
   display: flex;

@@ -9,6 +9,7 @@ import { computePinPlacement, pinImageUrl, pinService, pinTempDir, resolvePinIma
 import { listPinHistory, pinHistoryDir } from './pinHistory'
 import { screenshotService, trayIconPath, type CaptureOutcome } from './screenshot'
 import { fingerprintPixels, framesLookSame, stitchVertical } from './stitch'
+import { translateStatus, translateToChinese } from './translate'
 
 interface ToolbarButton {
   title: string
@@ -573,6 +574,37 @@ async function testOcr(shotPath: string): Promise<void> {
   }
 }
 
+async function testTranslate(): Promise<void> {
+  const decoded = new TextDecoder('gb18030').decode(Buffer.from([0xc4, 0xe3, 0xba, 0xc3, 0xa3, 0xac]))
+  check('GB18030 解码可用', decoded === '你好，', { decoded })
+
+  const status = translateStatus()
+  info('翻译插件状态', status)
+  if (!status.available) {
+    const denied = await translateToChinese('Hello, how are you?')
+    check('未安装翻译插件时安全降级', denied.ok === false && denied.reason.includes('未安装'), denied)
+  } else {
+    const result = await translateToChinese('Hello, how are you?')
+    check(
+      '英译中链路可用',
+      result.ok && result.text.includes('你好') && !result.text.includes('\uFFFD'),
+      result,
+    )
+  }
+
+  const tooLong = await translateToChinese('a'.repeat(5001))
+  check(
+    '超长文本拒绝翻译并提示',
+    tooLong.ok === false && tooLong.reason.includes('文本过长'),
+    tooLong,
+  )
+
+  if (!app.isPackaged) {
+    const source = readFileSync(join(app.getAppPath(), 'src/main/translate.ts'), 'utf8')
+    check('翻译实现不含联网参数', !/'-(?:a|d)'/.test(source), {})
+  }
+}
+
 /** 遮罩内 OCR 侧栏 */
 async function testOcrSidebar(wc: WebContents): Promise<void> {
   clipboard.clear()
@@ -718,6 +750,117 @@ async function testOcrSidebar(wc: WebContents): Promise<void> {
     'OCR 侧栏按编辑后文本复制且字数同步',
     copied && countText === `${typed.length} 字` && clipboard.readText() === typed,
     { countText, clipboard: clipboard.readText() },
+  )
+
+  // 翻译：中文源禁用 → 英文源启用 → 真实翻译 → 失败态 → 未安装态
+  wc.send('SCREENSHOTS:translate-status', {
+    available: true,
+    pluginDir: join(app.getPath('userData'), 'plugins', 'translate-locally'),
+  })
+  await sleep(150)
+  const zhTranslate = await evalJson<{ disabled: boolean; title: string } | null>(
+    wc,
+    `const b = document.querySelector('.snip-sidebar-translate'); return b ? { disabled: Boolean(b.disabled), title: b.title } : null;`,
+  )
+  check(
+    '中文源禁用翻译按钮',
+    Boolean(zhTranslate && zhTranslate.disabled && zhTranslate.title.includes('暂不支持中译英')),
+    zhTranslate,
+  )
+
+  wc.send('SCREENSHOTS:ocr-result', {
+    requestId: Date.now() + 2000,
+    status: 'ready',
+    text: 'Hello, how are you?',
+    language: 'en-US',
+    error: null,
+  })
+  await sleep(200)
+  const enTranslate = await evalJson<{ disabled: boolean; title: string } | null>(
+    wc,
+    `const b = document.querySelector('.snip-sidebar-translate'); return b ? { disabled: Boolean(b.disabled), title: b.title } : null;`,
+  )
+  check(
+    '英文源启用翻译按钮',
+    Boolean(enTranslate && !enTranslate.disabled && enTranslate.title.includes('本地英译中')),
+    enTranslate,
+  )
+
+  const translateClicked = await evalJson<boolean>(
+    wc,
+    `const b = document.querySelector('.snip-sidebar-translate'); if (!b || b.disabled) return false; b.click(); return true;`,
+  )
+  const loadingState = await evalJson<{ disabled: boolean; text: string; status: string } | null>(
+    wc,
+    `const b = document.querySelector('.snip-sidebar-translate');
+     return b ? { disabled: Boolean(b.disabled), text: b.textContent, status: (document.querySelector('.snip-sidebar-status')?.textContent || '') } : null;`,
+  )
+  check(
+    '翻译中按钮禁用且状态行提示',
+    Boolean(translateClicked && loadingState && loadingState.disabled && loadingState.text === '翻译中…' && loadingState.status === '本地翻译中…'),
+    loadingState,
+  )
+
+  let translated = ''
+  for (let i = 0; i < 30; i += 1) {
+    translated = await evalJson<string>(
+      wc,
+      `return (document.querySelector('.snip-sidebar-translation')?.textContent || '');`,
+    )
+    if (translated) break
+    await sleep(200)
+  }
+  const afterTranslate = await evalJson<{ status: string; original: string }>(
+    wc,
+    `return {
+       status: (document.querySelector('.snip-sidebar-status')?.textContent || ''),
+       original: (document.querySelector('.snip-sidebar-text')?.value || ''),
+     };`,
+  )
+  check(
+    '侧栏翻译成功并保留原文',
+    translated.includes('你好') && afterTranslate.original === 'Hello, how are you?',
+    { translated, ...afterTranslate },
+  )
+
+  wc.send('SCREENSHOTS:translate-result', { ok: false, reason: '自检翻译失败提示' })
+  await sleep(150)
+  const failedTranslate = await evalJson<{ status: string; original: string }>(
+    wc,
+    `return {
+       status: (document.querySelector('.snip-sidebar-status')?.textContent || ''),
+       original: (document.querySelector('.snip-sidebar-text')?.value || ''),
+     };`,
+  )
+  check(
+    '翻译失败保留原文并显示原因',
+    failedTranslate.status.includes('自检翻译失败提示') && failedTranslate.original === 'Hello, how are you?',
+    failedTranslate,
+  )
+
+  wc.send('SCREENSHOTS:translate-status', {
+    available: false,
+    pluginDir: 'C:\\fake\\plugins\\translate-locally',
+  })
+  await sleep(150)
+  const missingTranslate = await evalJson<{ disabled: boolean; title: string; status: string } | null>(
+    wc,
+    `const b = document.querySelector('.snip-sidebar-translate');
+     return b ? {
+       disabled: Boolean(b.disabled),
+       title: b.title,
+       status: (document.querySelector('.snip-sidebar-status')?.textContent || ''),
+     } : null;`,
+  )
+  check(
+    '未安装插件时禁用并提示路径',
+    Boolean(
+      missingTranslate &&
+        missingTranslate.disabled &&
+        missingTranslate.title.includes('未安装翻译插件') &&
+        missingTranslate.status.includes('plugins'),
+    ),
+    missingTranslate,
   )
 
   const sidebarShotPath = join(app.getPath('temp'), 'snip-selftest-ocr-sidebar.png')
@@ -1721,6 +1864,7 @@ export async function runSelftest(): Promise<void> {
     await testStitchCore(wc)
     await testLongShot(wc, outcomes, display.scaleFactor)
     await testOcrSidebar(wc)
+    await testTranslate()
     await testEscape(wc, outcomes)
   } catch (error) {
     check('自检流程无异常中断', false, {

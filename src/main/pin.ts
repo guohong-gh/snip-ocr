@@ -87,7 +87,7 @@ export interface PinCaptureInput {
 }
 
 export interface CreatePinOptions {
-  /** 从贴图历史重新贴出时传 false，避免同一条历史被反复记录 */
+  /** 从截图历史重新贴出时传 false，避免同一条历史被反复记录 */
   recordHistory?: boolean
 }
 

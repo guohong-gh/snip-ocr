@@ -10,3 +10,8 @@ data/
 .trae-html-share-packages/
 .design-preview/
 .DS_Store
+# 离线翻译插件二进制（约 105 MiB，按 README 手动放置）
+plugins/translate-locally/
+.tmp/
+.translate-a1/
+.translate-spike/

@@ -63,6 +63,11 @@ scripts/
 - ❌ 禁止把截图逻辑写出 [src/main/screenshot.ts](./src/main/screenshot.ts)（不得散落到 `index.ts`）；贴图窗口逻辑集中在 [src/main/pin.ts](./src/main/pin.ts)
 - ❌ 禁止在 `src/shared/ipc.ts` 之外手写 IPC 通道名字面量，两端只能从它取值
 - ❌ 禁止引入任何网络请求代码、License / 授权校验代码、支付 / 登录 / 云服务代码
+- ✅ 唯一允许的外部二进制例外面（必须同时满足下列全部验收条件）：把 translateLocally 作为**可选、离线、用户手动安装**的本地翻译插件，仅提供英译中。
+  1. 主包与 asar 内不得包含插件二进制或模型：`electron-builder.yml` 的 `files` 必须排除 `plugins/**`；未安装时「译成中文」入口置灰，并在状态行提示插件放置路径。
+  2. 只允许以 `-m <model> -i <input> -o <output>` 调用，工作目录必须是插件内 `models/`；源码中不得出现 `-a` / `-d` 参数，不得出现 HTTP / HTTPS / WebSocket / telemetry / 自动更新 / 模型下载代码；selftest 必须保留「翻译实现不含联网参数」断言。
+  3. 插件所有文件的 SHA256 固定在 [README.md](./README.md) 的「离线翻译插件」一节，替换任何文件需重新审批并同步哈希。
+  4. 仅支持英译中（en→zh）；中译英不接入，入口必须置灰并提示「暂不支持中译英」。
 - ❌ 禁止做标注与真实的更新服务 / 自动下载安装（截图工具栏只允许 OCR / 贴图 / 另存为 / 长图 / 取消 / 确定；贴图页只渲染图片与拖拽缩放，不得引入编辑器/标注逻辑）。截图历史保留 50 条，属既有功能；设置里的「检查更新」入口保留，但必须维持离线桩实现：不联网、不下载，只报告当前版本
 - ❌ 禁止把 OCR 写出 [src/main/ocr.ts](./src/main/ocr.ts)：只允许 Windows.Media.Ocr 本地识别，不得联网、不得引入 OCR 依赖或远程服务；失败要如实通知，不得静默吞掉
 - ❌ 禁止识字后自动覆盖剪贴板：结果必须进入遮罩内可编辑侧栏（[src/main/overlayUi.ts](./src/main/overlayUi.ts)），由用户点「复制」才写入剪贴板
@@ -86,8 +91,8 @@ scripts/
 
 1. `npm run typecheck` —— 两份 tsconfig（node / web）均零报错
 2. `npm run build` —— 产出 `out/main`、`out/preload`、`out/renderer`（含独立 `pin.html`）
-3. `npm run selftest` —— 要求末行输出 `[selftest] ALL PASS`（最近一次开发态实跑：126 项 PASS + 8 项 INFO，其中 1 条 INFO 为 `Alt+A` 被占用时的注册结果；覆盖主窗首页/状态条/设置三页/图标预览、工具栏 6 动作（含独立贴图、确定复制、长图收起遮罩进入 HUD/选区透出真实屏幕（冻结图不可见）/实时预览在选区外且穿透/HUD 按钮与工具栏同款/完成复制/完成后另存与 OCR/关闭/长图单帧与普通截图像素一致）、拼接核心（重叠行数/容差打分/固定表头/到底指纹/分段导出/颜色 round-trip）、双击复制、保存、贴图创建/尺寸/位置/1:1/滚轮缩放与百分比/Ctrl+0/四角手柄/拖拽不回弹/8 向缩放/单张关闭/多贴图、遮罩内 OCR 侧栏动态选边/标题条拖拽不越界/textarea 仍可输入选中/编辑/字数/手动复制/关闭/迟到结果丢弃、贴图快捷键注册、Windows OCR 识别、截图历史覆盖复制/另存/贴图/长图四种来源且索引落盘、取消不记录）。验证 dev 的 http 页面可跑 `npx electron-vite dev -- --selftest`（`--` 之后的参数会透传给 Electron）
-4. 改动涉及打包、图标或依赖时，追加 `npm run pack`，并对 `dist/win-unpacked/snip-ocr.exe --selftest` 再跑一次验收（最近一次打包版实跑：90 项 PASS + 7 项 INFO，未核实（本轮未重跑打包态），含「运行数据位于程序目录 data/」「旧 %APPDATA% 已清理」「贴图走 snip-pin://」断言）。改动涉及安装/数据目录时，还要做一次静默安装 → 运行 → 静默卸载，确认安装目录、`%APPDATA%\snip-ocr`、快捷方式与卸载注册表项全部清除
+3. `npm run selftest` —— 要求末行输出 `[selftest] ALL PASS`（最近一次开发态实跑：135 项 PASS + 9 项 INFO，其中 1 条 INFO 为 `Alt+A` 被占用时的注册结果；覆盖主窗首页/状态条/设置三页/图标预览、工具栏 6 动作（含独立贴图、确定复制、长图收起遮罩进入 HUD/选区透出真实屏幕（冻结图不可见）/实时预览在选区外且穿透/HUD 按钮与工具栏同款/完成复制/完成后另存与 OCR/关闭/长图单帧与普通截图像素一致）、拼接核心（重叠行数/容差打分/固定表头/到底指纹/分段导出/颜色 round-trip）、双击复制、保存、贴图创建/尺寸/位置/1:1/滚轮缩放与百分比/Ctrl+0/四角手柄/拖拽不回弹/8 向缩放/单张关闭/多贴图、遮罩内 OCR 侧栏动态选边/标题条拖拽不越界/textarea 仍可输入选中/编辑/字数/手动复制/关闭/迟到结果丢弃、贴图快捷键注册、Windows OCR 识别、截图历史覆盖复制/另存/贴图/长图四种来源且索引落盘、取消不记录、离线翻译（GB18030 解码/英译中真实链路/英文源启用/中文源置灰/翻译中与失败态/未安装提示与安装路径/超长拒绝/源码不含联网参数））。验证 dev 的 http 页面可跑 `npx electron-vite dev -- --selftest`（`--` 之后的参数会透传给 Electron）
+4. 改动涉及打包、图标或依赖时，追加 `npm run pack`，并对 `dist/win-unpacked/snip-ocr.exe --selftest` 再跑一次验收（最近一次打包版实跑：136 项 PASS + 9 项 INFO，0 FAIL，含「运行数据位于程序目录 data/」「旧 %APPDATA% 已清理」「贴图走 snip-pin://」，以及把插件放到 `data\plugins\translate-locally` 后「翻译插件状态 pluginDir 指向程序目录 data/」「英译中链路可用」「超长文本拒绝翻译并提示」；清理测试插件后 `win-unpacked` 与 asar 内均无 `plugins/`）。改动涉及安装/数据目录时，还要做一次静默安装 → 运行 → 静默卸载，确认安装目录、`%APPDATA%\snip-ocr`、快捷方式与卸载注册表项全部清除
    打包环境注意：无外网时 `@electron/get` 会卡在校验 Electron 缓存，需设 `ELECTRON_MIRROR`（本机用 `https://npmmirror.com/mirrors/electron/`）；若 IDE/索引器锁住新解压的 `default_app.asar` 导致 `EPERM/EBUSY`，把输出指到工作区外（`npx electron-builder --config.directories.output=<临时目录>`）再拷回 `dist/`。
 
 任何一项失败先修复再继续；新增交互要同步在 [src/main/selftest.ts](./src/main/selftest.ts) 补断言，不接受只靠人工点击。
