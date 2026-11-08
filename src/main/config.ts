@@ -4,7 +4,9 @@ import { dirname, join, resolve } from 'node:path'
 import {
   DEFAULT_HOTKEY,
   DEFAULT_PIN_HOTKEY,
+  HISTORY_LIMITS,
   ICON_THEMES,
+  type HistoryLimit,
   type IconTheme,
 } from '@shared/ipc'
 
@@ -12,6 +14,10 @@ export interface StoredConfig {
   hotkey: string
   pinHotkey: string
   iconTheme: IconTheme
+  /** 截图历史保留档位（5/10/50） */
+  historyLimit: HistoryLimit
+  /** 选定的 OCR 语言标签；空字符串表示跟随系统默认 */
+  ocrLanguage: string
   /** 首次关闭到托盘时是否已提示过 */
   trayHintShown: boolean
 }
@@ -20,6 +26,8 @@ const DEFAULTS: StoredConfig = {
   hotkey: DEFAULT_HOTKEY,
   pinHotkey: DEFAULT_PIN_HOTKEY,
   iconTheme: 'default',
+  historyLimit: 10,
+  ocrLanguage: '',
   trayHintShown: false,
 }
 
@@ -79,6 +87,8 @@ function normalize(raw: unknown): StoredConfig {
   const hotkey = source.hotkey
   const pinHotkey = source.pinHotkey
   const iconTheme = source.iconTheme
+  const historyLimit = source.historyLimit
+  const ocrLanguage = source.ocrLanguage
   return {
     hotkey: typeof hotkey === 'string' && hotkey.trim() ? hotkey.trim() : DEFAULTS.hotkey,
     pinHotkey: typeof pinHotkey === 'string' && pinHotkey.trim() ? pinHotkey.trim() : DEFAULTS.pinHotkey,
@@ -86,6 +96,12 @@ function normalize(raw: unknown): StoredConfig {
       typeof iconTheme === 'string' && (ICON_THEMES as readonly string[]).includes(iconTheme)
         ? (iconTheme as IconTheme)
         : DEFAULTS.iconTheme,
+    historyLimit:
+      typeof historyLimit === 'number' && (HISTORY_LIMITS as readonly number[]).includes(historyLimit)
+        ? (historyLimit as HistoryLimit)
+        : DEFAULTS.historyLimit,
+    ocrLanguage:
+      typeof ocrLanguage === 'string' && ocrLanguage.trim() ? ocrLanguage.trim() : DEFAULTS.ocrLanguage,
     trayHintShown: source.trayHintShown === true,
   }
 }

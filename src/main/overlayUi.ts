@@ -1,14 +1,14 @@
 import type { WebContents } from 'electron'
 import { TOOL_LABELS, toolIconFor, type ToolKey } from '@shared/icons'
 import type { IconTheme } from '@shared/ipc'
+import {
+  OVERLAY_ACTION_PREFIX,
+  OVERLAY_COPY_PREFIX,
+  OVERLAY_HUD_RECT_PREFIX,
+  OVERLAY_TRANSLATE_PREFIX,
+  OVERLAY_TRANSLATE_STATUS_PREFIX,
+} from '@shared/overlayProtocol'
 
-export const OVERLAY_ACTION_PREFIX = '__SNIP_ACTION__'
-export const OVERLAY_COPY_PREFIX = '__SNIP_COPY__'
-
-export const OVERLAY_HUD_RECT_PREFIX = '__SNIP_HUD_RECT__'
-/** 侧栏「译成中文」请求（后接 base64 文本）；遮罩页只能通过 console 前缀与主进程通信 */
-export const OVERLAY_TRANSLATE_PREFIX = '__SNIP_TRANSLATE__'
-export const OVERLAY_TRANSLATE_STATUS_PREFIX = '__SNIP_TRANSLATE_STATUS__'
 const TOOL_ORDER: ToolKey[] = ['ocr', 'pin', 'save', 'longshot', 'cancel', 'confirm']
 
 export function overlayIcons(theme: IconTheme, customIconUrl: string | null): Record<ToolKey, string> {
@@ -625,9 +625,10 @@ function buildScript(icons: Record<ToolKey, string>): string {
   let discardOcr = false;
   let ocrTimer = 0;
   let longShotCount = 0;
-  /** null = 尚未收到主进程的插件状态；true/false = 已安装/未安装 */
-  let translateAvailable = null;
+  /** null = 尚未收到主进程的插件状态；对象 = 各方向可用性 */
+  let translateStatus = null;
   let translatePluginDir = '';
+  let translateDirection = null;
   /** idle | loading | done | error */
   let translateState = 'idle';
 
@@ -800,12 +801,19 @@ function buildScript(icons: Record<ToolKey, string>): string {
   }
   function applyTranslateStatus(payload) {
     if (!payload || typeof payload !== 'object') return;
-    translateAvailable = Boolean(payload.available);
+    translateStatus = payload.directions && typeof payload.directions === 'object' ? payload.directions : null;
     translatePluginDir = String(payload.pluginDir || '');
     refreshTranslateButton();
   }
+  function translateDirectionForLang(lang) {
+    const lower = String(lang || '').toLowerCase();
+    if (lower.startsWith('en')) return 'en-zh';
+    if (lower.startsWith('zh')) return 'zh-en';
+    return null;
+  }
   function resetTranslation() {
     translateState = 'idle';
+    translateDirection = null;
     const bar = sidebar();
     if (bar) {
       const box = bar.querySelector('.snip-sidebar-translation');
@@ -823,24 +831,27 @@ function buildScript(icons: Record<ToolKey, string>): string {
     if (!btn) return;
     const lang = (bar.querySelector('.snip-sidebar-lang').textContent || '').trim();
     const text = (bar.querySelector('.snip-sidebar-text').value || '').trim();
-    const english = lang.toLowerCase().startsWith('en');
+    const direction = translateDirectionForLang(lang);
     let reason = '';
-    if (translateAvailable !== true) {
-      reason = translateAvailable === false ? '未安装翻译插件' : '正在检查翻译插件…';
+    if (!translateStatus) {
+      reason = '正在检查翻译插件…';
+    } else if (!direction) {
+      reason = '仅支持中英互译';
     } else if (sidebarStatus !== 'ready' || !text) {
       reason = '暂无可翻译的文本';
-    } else if (!english) {
-      reason = '暂不支持中译英';
+    } else {
+      const status = translateStatus[direction];
+      if (!status || !status.available) reason = (status && status.reason) || '翻译不可用';
     }
     const busy = translateState === 'loading';
     btn.disabled = busy || Boolean(reason);
-    btn.textContent = busy ? '翻译中…' : '译成中文';
-    btn.title = reason || (translateState === 'done' ? '重新翻译' : '本地英译中，不联网');
-    if (sidebarStatus !== 'ready') return;
-    if (translateAvailable === false) {
-      setStatus('未安装翻译插件：' + (translatePluginDir || 'plugins\\translate-locally'), false);
-    } else if (translateState === 'idle' && lang && !english) {
-      setStatus('暂不支持中译英', false);
+    btn.textContent = busy ? '翻译中…' : direction === 'zh-en' ? '译成英文' : '译成中文';
+    btn.title = reason || (translateState === 'done' ? '重新翻译' : direction === 'zh-en' ? '本地中译英，不联网' : '本地英译中，不联网');
+    if (sidebarStatus !== 'ready' || !translateStatus) return;
+    const status = direction ? translateStatus[direction] : null;
+    if (status && !status.available) {
+      const detail = status.reason || '翻译不可用';
+      setStatus(detail === '未安装翻译插件' ? detail + '：' + (translatePluginDir || 'plugins\\translate-locally') : detail, false);
     }
   }
   function translateSidebarText() {
@@ -848,11 +859,14 @@ function buildScript(icons: Record<ToolKey, string>): string {
     if (!bar || translateState === 'loading') return;
     const value = (bar.querySelector('.snip-sidebar-text').value || '').trim();
     if (!value) return;
+    const direction = translateDirectionForLang((bar.querySelector('.snip-sidebar-lang').textContent || '').trim());
+    if (!direction) return;
+    translateDirection = direction;
     translateState = 'loading';
     setStatus('本地翻译中…', false);
     refreshTranslateButton();
     try {
-      console.log(TRANSLATE_PREFIX + btoa(unescape(encodeURIComponent(value))));
+      console.log(TRANSLATE_PREFIX + btoa(unescape(encodeURIComponent(JSON.stringify({ text: value, direction: direction })))));
     } catch {
       translateState = 'error';
       setStatus('翻译请求发送失败', true);
@@ -867,7 +881,7 @@ function buildScript(icons: Record<ToolKey, string>): string {
       const box = bar.querySelector('.snip-sidebar-translation');
       box.textContent = String(payload.text || '');
       box.hidden = !box.textContent.trim();
-      setStatus('已译成中文', false);
+      setStatus(translateDirection === 'zh-en' ? '已译成英文' : '已译成中文', false);
     } else {
       setStatus(String(payload.reason || '翻译失败'), true);
     }

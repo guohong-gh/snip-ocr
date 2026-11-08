@@ -12,7 +12,7 @@ const imageUrl = new URLSearchParams(window.location.search).get('image')
 
 function closePin(reason: string): void {
   console.info(`[pin-view] close: ${reason}`)
-  window.snip.pin.close()
+  window.snipPin.close()
 }
 
 type GestureMode = 'idle' | 'move' | 'resize'
@@ -100,7 +100,7 @@ function PinView() {
 
   useEffect(() => {
     let alive = true
-    void window.snip.pin.meta().then((next) => {
+    void window.snipPin.meta().then((next) => {
       if (alive) setMeta(next)
     })
     return () => {
@@ -172,7 +172,7 @@ function PinView() {
     moved.current = false
     startPoint.current = { x: event.screenX, y: event.screenY }
     capturePointer(event.currentTarget, event.pointerId)
-    window.snip.pin.dragStart(event.screenX, event.screenY)
+    window.snipPin.dragStart(event.screenX, event.screenY)
   }
 
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
@@ -183,13 +183,13 @@ function PinView() {
     ) {
       moved.current = true
     }
-    if (gesture.current === 'move') window.snip.pin.dragMove(event.screenX, event.screenY)
-    else window.snip.pin.resizeMove(event.screenX, event.screenY)
+    if (gesture.current === 'move') window.snipPin.dragMove(event.screenX, event.screenY)
+    else window.snipPin.resizeMove(event.screenX, event.screenY)
   }
 
   const finishGesture = (event: ReactPointerEvent<HTMLDivElement>, canDoubleClick: boolean): void => {
     if (gesture.current === 'move') {
-      window.snip.pin.dragEnd()
+      window.snipPin.dragEnd()
       gesture.current = 'idle'
       if (!canDoubleClick || moved.current) {
         lastTap.current = null
@@ -211,7 +211,7 @@ function PinView() {
       return
     }
     if (gesture.current === 'resize') {
-      window.snip.pin.resizeEnd()
+      window.snipPin.resizeEnd()
       gesture.current = 'idle'
       lastTap.current = null
     }
@@ -235,7 +235,7 @@ function PinView() {
       startPoint.current = { x: event.screenX, y: event.screenY }
       lastTap.current = null
       capturePointer(event.currentTarget, event.pointerId)
-      window.snip.pin.resizeStart(direction, event.screenX, event.screenY)
+      window.snipPin.resizeStart(direction, event.screenX, event.screenY)
     }
   }
 
@@ -268,7 +268,7 @@ function PinView() {
           onLoad={(event) => {
             const image = event.currentTarget
             setNatural({ width: image.naturalWidth, height: image.naturalHeight })
-            window.snip.pin.ready()
+            window.snipPin.ready()
           }}
           onError={() => closePin('image-error')}
         />

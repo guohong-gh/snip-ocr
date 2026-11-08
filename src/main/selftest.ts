@@ -2,14 +2,53 @@ import { app, BrowserWindow, clipboard, dialog, globalShortcut, nativeImage, scr
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { DEFAULT_HOTKEY, DEFAULT_PIN_HOTKEY, type PinMeta } from '@shared/ipc'
+import { DEFAULT_HOTKEY, DEFAULT_PIN_HOTKEY, IPC, type PinMeta } from '@shared/ipc'
+import {
+  OVERLAY_ACTION_PREFIX,
+  OVERLAY_COPY_PREFIX,
+  OVERLAY_HUD_RECT_PREFIX,
+  OVERLAY_TRANSLATE_PREFIX,
+  OVERLAY_TRANSLATE_STATUS_PREFIX,
+  parseOverlayConsoleMessage,
+} from '@shared/overlayProtocol'
 import { HOME_TITLE, openMainWindow } from './homeWindow'
-import { mergeOcrLines, normalizeOcrText, ocrService, type OcrLineBox } from './ocr'
-import { computePinPlacement, pinImageUrl, pinService, pinTempDir, resolvePinImagePath } from './pin'
-import { listPinHistory, pinHistoryDir } from './pinHistory'
+import { registeredIpcChannels } from './ipc/registry'
+import { overlayBridgeRegistrationCount } from './overlayBridge'
+import {
+  LONG_BOTTOM_TICKS,
+  LONG_STABLE_TICKS,
+  LONG_TICK_MS,
+  LONG_WARMUP_MS,
+  planLongFrameCrop,
+} from './longShot'
+import {
+  buildOcrScript,
+  listOcrLanguages,
+  mergeChunkLines,
+  mergeOcrLines,
+  normalizeOcrText,
+  OCR_CHUNK_HEIGHT,
+  OCR_CHUNK_OVERLAP,
+  ocrService,
+  planOcrChunks,
+  resolveOcrLanguage,
+  splitImageForOcr,
+  type OcrChunkLines,
+  type OcrLineBox,
+} from './ocr'
+import {
+  computeHistoryPinPlacement,
+  computePinPlacement,
+  pinImageUrl,
+  pinService,
+  pinTempDir,
+  resolvePinImagePath,
+} from './pin'
+import { listPinHistory, pinHistoryDir, recordPinHistory, setPinHistoryLimit } from './pinHistory'
+import { loadConfig, saveConfig } from './config'
 import { screenshotService, trayIconPath, type CaptureOutcome } from './screenshot'
 import { fingerprintPixels, framesLookSame, stitchVertical } from './stitch'
-import { translateStatus, translateToChinese } from './translate'
+import { translate, translateStatus } from './translate'
 
 interface ToolbarButton {
   title: string
@@ -199,16 +238,32 @@ async function waitForOverlayReady(
   return { ready: false, width: last?.width ?? 0, height: last?.height ?? 0 }
 }
 
+interface CaptureRegion {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 async function startAndDrag(
   wc: WebContents,
-): Promise<{ area: Viewport; barWidth: number | null; overlayReady: boolean }> {
+  region?: CaptureRegion,
+): Promise<{
+  area: Viewport
+  selection: CaptureRegion
+  barWidth: number | null
+  overlayReady: boolean
+}> {
   await screenshotService.startCapture()
   const overlay = await waitForOverlayReady(wc)
   const area = await usableArea(wc)
-  await dragSelect(wc, [Math.round(area.width * 0.1), Math.round(area.height * 0.1)], [
-    Math.round(area.width * 0.6),
-    Math.round(area.height * 0.6),
-  ])
+  const from: [number, number] = region
+    ? [region.x, region.y]
+    : [Math.round(area.width * 0.1), Math.round(area.height * 0.1)]
+  const to: [number, number] = region
+    ? [region.x + region.width, region.y + region.height]
+    : [Math.round(area.width * 0.6), Math.round(area.height * 0.6)]
+  await dragSelect(wc, from, to)
   let rect: { x: number; y: number; w: number; h: number } | null = null
   const deadline = Date.now() + 3000
   while (Date.now() < deadline) {
@@ -223,7 +278,12 @@ async function startAndDrag(
     await sleep(100)
   }
   await sleep(700)
-  return { area, barWidth: rect?.w ?? null, overlayReady: overlay.ready }
+  return {
+    area,
+    selection: { x: from[0], y: from[1], width: to[0] - from[0], height: to[1] - from[1] },
+    barWidth: rect?.w ?? null,
+    overlayReady: overlay.ready,
+  }
 }
 
 /** 框选 + 双击复制到剪贴板 */
@@ -371,6 +431,163 @@ async function testHomeWindow(shotPath: string): Promise<void> {
     home.statusText.includes('贴图') && home.footerText.includes('确定') && home.closeTip.includes('托盘'),
     { statusText: home.statusText, footerText: home.footerText, closeTip: home.closeTip },
   )
+  const stateSnapshot = await evalJson<Record<string, unknown>>(
+    win.webContents,
+    `return await window.snip.getState();`,
+  )
+  const stateFields = [
+    'hotkey',
+    'hotkeyError',
+    'pinHotkey',
+    'pinHotkeyError',
+    'iconTheme',
+    'customIconUrl',
+    'autostart',
+    'autostartSupported',
+    'pinCount',
+    'hasHistory',
+    'historyLimit',
+    'ocrLanguage',
+    'version',
+    'platform',
+    'displayCount',
+  ]
+  check(
+    '主窗状态快照字段完整',
+    stateFields.every((field) => Object.prototype.hasOwnProperty.call(stateSnapshot, field)),
+    { missing: stateFields.filter((field) => !(field in stateSnapshot)) },
+  )
+  const expectedChannels: Record<string, string> = {
+    getState: 'snip:get-state',
+    stateChanged: 'snip:state-changed',
+    setHotkey: 'snip:set-hotkey',
+    setPinHotkey: 'snip:set-pin-hotkey',
+    setAutostart: 'snip:set-autostart',
+    setIconTheme: 'snip:set-icon-theme',
+    pickCustomIcon: 'snip:pick-custom-icon',
+    checkUpdate: 'snip:check-update',
+    homeStartCapture: 'snip:home-start-capture',
+    homeWindowAction: 'snip:home-window-action',
+    homeReady: 'snip:home-ready',
+    homeOpenSettings: 'snip:home-open-settings',
+    quitApp: 'snip:quit-app',
+    pinLast: 'snip:pin-last',
+    pinCloseAll: 'snip:pin-close-all',
+    pinMeta: 'snip:pin-meta',
+    pinReady: 'snip:pin-ready',
+    pinClose: 'snip:pin-close',
+    pinDragStart: 'snip:pin-drag-start',
+    pinDragMove: 'snip:pin-drag-move',
+    pinDragEnd: 'snip:pin-drag-end',
+    pinResizeStart: 'snip:pin-resize-start',
+    pinResizeMove: 'snip:pin-resize-move',
+    pinResizeEnd: 'snip:pin-resize-end',
+    pinHistoryList: 'snip:pin-history-list',
+    pinHistoryChanged: 'snip:pin-history-changed',
+    pinHistoryDelete: 'snip:pin-history-delete',
+    pinHistoryClear: 'snip:pin-history-clear',
+    pinHistoryPin: 'snip:pin-history-pin',
+    pinHistoryCopy: 'snip:pin-history-copy',
+    pinHistorySave: 'snip:pin-history-save',
+    setHistoryLimit: 'snip:set-history-limit',
+    listOcrLanguages: 'snip:list-ocr-languages',
+    setOcrLanguage: 'snip:set-ocr-language',
+    translateStatus: 'snip:translate-status',
+    translate: 'snip:translate',
+  }
+  const currentChannels = IPC as Record<string, string>
+  const missingChannels = Object.keys(expectedChannels).filter((key) => !(key in currentChannels))
+  const changedChannels = Object.entries(expectedChannels)
+    .filter(([key, value]) => currentChannels[key] !== value)
+    .map(([key, value]) => ({ key, expected: value, actual: currentChannels[key] }))
+  const extraChannels = Object.keys(currentChannels).filter((key) => !(key in expectedChannels))
+  check(
+    'IPC 通道字符串值未变',
+    missingChannels.length === 0 && changedChannels.length === 0 && extraChannels.length === 0,
+    { missing: missingChannels, changed: changedChannels, extra: extraChannels },
+  )
+  const inboundChannels = registeredIpcChannels()
+  const outboundChannels = new Set<string>([
+    IPC.stateChanged,
+    IPC.pinHistoryChanged,
+    IPC.homeOpenSettings,
+  ])
+  const expectedInboundChannels: string[] = Object.values(IPC).filter(
+    (channel) => !outboundChannels.has(channel),
+  )
+  const duplicateInbound = inboundChannels.filter(
+    (channel, index) => inboundChannels.indexOf(channel) !== index,
+  )
+  const missingInbound = expectedInboundChannels.filter(
+    (channel) => !inboundChannels.includes(channel),
+  )
+  const extraInbound = inboundChannels.filter(
+    (channel) => !expectedInboundChannels.includes(channel),
+  )
+  check(
+    '所有入站 IPC 通道恰好注册一次',
+    duplicateInbound.length === 0 &&
+      missingInbound.length === 0 &&
+      extraInbound.length === 0 &&
+      inboundChannels.length === expectedInboundChannels.length,
+    {
+      registered: inboundChannels.length,
+      expected: expectedInboundChannels.length,
+      duplicate: duplicateInbound,
+      missing: missingInbound,
+      extra: extraInbound,
+    },
+  )
+  const overlayPrefixes = {
+    action: OVERLAY_ACTION_PREFIX,
+    copy: OVERLAY_COPY_PREFIX,
+    hud: OVERLAY_HUD_RECT_PREFIX,
+    translate: OVERLAY_TRANSLATE_PREFIX,
+    translateStatus: OVERLAY_TRANSLATE_STATUS_PREFIX,
+  }
+  check(
+    '遮罩协议常量值未变',
+    overlayPrefixes.action === '__SNIP_ACTION__' &&
+      overlayPrefixes.copy === '__SNIP_COPY__' &&
+      overlayPrefixes.hud === '__SNIP_HUD_RECT__' &&
+      overlayPrefixes.translate === '__SNIP_TRANSLATE__' &&
+      overlayPrefixes.translateStatus === '__SNIP_TRANSLATE_STATUS__',
+    overlayPrefixes,
+  )
+  const unknownOverlayAction = parseOverlayConsoleMessage(
+    `${OVERLAY_ACTION_PREFIX}{"action":"not-a-real-action"}`,
+  )
+  const brokenOverlayAction = parseOverlayConsoleMessage(`${OVERLAY_ACTION_PREFIX}{bad json`)
+  const validOverlayAction = parseOverlayConsoleMessage(
+    `${OVERLAY_ACTION_PREFIX}{"action":"ocr","requestId":42}`,
+  )
+  const invalidRequestId = parseOverlayConsoleMessage(
+    `${OVERLAY_ACTION_PREFIX}{"action":"ocr","requestId":"x"}`,
+  )
+  check(
+    '未知遮罩动作被忽略',
+    unknownOverlayAction.kind === 'unknown' &&
+      brokenOverlayAction.kind === 'unknown' &&
+      validOverlayAction.kind === 'action' &&
+      validOverlayAction.action === 'ocr' &&
+      validOverlayAction.requestId === 42 &&
+      invalidRequestId.kind === 'action' &&
+      invalidRequestId.requestId === undefined,
+    { unknownOverlayAction, brokenOverlayAction, validOverlayAction, invalidRequestId },
+  )
+  check(
+    '翻译请求单点接收',
+    overlayBridgeRegistrationCount() === 1,
+    { registrations: overlayBridgeRegistrationCount() },
+  )
+  check(
+    '长图时序常量未变',
+    LONG_TICK_MS === 200 &&
+      LONG_STABLE_TICKS === 2 &&
+      LONG_BOTTOM_TICKS === 5 &&
+      LONG_WARMUP_MS === 220,
+    { LONG_TICK_MS, LONG_STABLE_TICKS, LONG_BOTTOM_TICKS, LONG_WARMUP_MS },
+  )
   check(
     '主窗可缩放且限制在 480×400 – 1200×900',
     win.isResizable() &&
@@ -516,6 +733,72 @@ async function testHomeWindow(shotPath: string): Promise<void> {
 }
 
 async function testOcr(shotPath: string): Promise<void> {
+  const sampleLanguages = [
+    { tag: 'zh-Hans-CN', displayName: '中文（简体，中国）' },
+    { tag: 'en-US', displayName: 'English (United States)' },
+  ]
+  check(
+    'OCR 语言未选择时走系统默认',
+    resolveOcrLanguage('', sampleLanguages) === null && resolveOcrLanguage(null, sampleLanguages) === null,
+    {},
+  )
+  check(
+    'OCR 非法语言代码回退系统默认',
+    resolveOcrLanguage('ja-JP', sampleLanguages) === null,
+    { requested: 'ja-JP' },
+  )
+  check(
+    'OCR 选定语言按标签匹配并保留系统写法',
+    resolveOcrLanguage('en-us', sampleLanguages)?.tag === 'en-US',
+    { matched: resolveOcrLanguage('en-us', sampleLanguages) },
+  )
+  const selectedScript = buildOcrScript('C:\\tmp\\shot.png', 'en-US')
+  const defaultScript = buildOcrScript('C:\\tmp\\shot.png', '')
+  check(
+    'OCR 选定语言写入识别脚本参数',
+    selectedScript.includes(Buffer.from('en-US', 'utf8').toString('base64')) &&
+      !selectedScript.includes('__OCR_LANGUAGE_B64__') &&
+      !defaultScript.includes('__OCR_LANGUAGE_B64__'),
+    { selected: 'en-US' },
+  )
+  const languages = await listOcrLanguages()
+  check(
+    '系统 OCR 语言清单可枚举或如实报错',
+    Array.isArray(languages.languages) && (languages.languages.length > 0 || Boolean(languages.error)),
+    languages,
+  )
+  const plan = planOcrChunks(4000)
+  check(
+    '长图 OCR 分块覆盖全高且重叠 100px',
+    plan.length === 3 &&
+      plan[0].height === OCR_CHUNK_HEIGHT &&
+      plan[1].y === OCR_CHUNK_HEIGHT - OCR_CHUNK_OVERLAP &&
+      plan[2].y + plan[2].height === 4000,
+    { plan },
+  )
+  const tall = nativeImage.createFromBitmap(Buffer.alloc(100 * 4000 * 4, 255), {
+    width: 100,
+    height: 4000,
+  })
+  const slices = splitImageForOcr(tall.toPNG())
+  check('长图 OCR 合成图按 1600px 切块', slices.length === 3 && slices.every((slice) => slice.length > 0), {
+    slices: slices.length,
+  })
+  const line = (text: string, y: number, height = 30): OcrLineBox => ({
+    text,
+    x: 0,
+    y,
+    width: 100,
+    height,
+    words: [],
+  })
+  const chunkLines: OcrChunkLines[] = [
+    { offsetY: 0, lines: [line('第一行', 100), line('hel', 1590)] },
+    { offsetY: 1500, lines: [line('hello', 90), line('第二行', 200)] },
+  ]
+  check('长图 OCR 跨块去重与断词拼接', mergeChunkLines(chunkLines) === '第一行\nhello\n第二行', {
+    text: mergeChunkLines(chunkLines),
+  })
   check('OCR 文本规范化去除汉字间空格', normalizeOcrText('本 地 截 图 工 具') === '本地截图工具', {})
   check('OCR 文本规范化修复数字空格', normalizeOcrText('OCR TIMEOUT MS = 1 5000 ms') === 'OCR TIMEOUT MS = 15000 ms', {})
   check(
@@ -614,11 +897,11 @@ async function testTranslate(): Promise<void> {
 
   const status = translateStatus()
   info('翻译插件状态', status)
-  if (!status.available) {
-    const denied = await translateToChinese('Hello, how are you?')
+  if (!status.directions['en-zh'].available) {
+    const denied = await translate('Hello, how are you?', 'en-zh')
     check('未安装翻译插件时安全降级', denied.ok === false && denied.reason.includes('未安装'), denied)
   } else {
-    const result = await translateToChinese('Hello, how are you?')
+    const result = await translate('Hello, how are you?', 'en-zh')
     check(
       '英译中链路可用',
       result.ok && result.text.includes('你好') && !result.text.includes('\uFFFD'),
@@ -626,7 +909,20 @@ async function testTranslate(): Promise<void> {
     )
   }
 
-  const tooLong = await translateToChinese('a'.repeat(5001))
+  if (!status.directions['zh-en'].available) {
+    const denied = await translate('你好，今天天气不错。', 'zh-en')
+    const expected = status.directions['en-zh'].available ? '未安装中译英模型' : '未安装翻译插件'
+    check(
+      '缺少中译英模型时明确提示且不返回假译文',
+      denied.ok === false && denied.reason.includes(expected),
+      { expected, denied },
+    )
+  } else {
+    const result = await translate('你好，今天天气不错。', 'zh-en')
+    check('中译英链路可用', result.ok && !result.text.includes('\uFFFD'), result)
+  }
+
+  const tooLong = await translate('a'.repeat(5001), 'en-zh')
   check(
     '超长文本拒绝翻译并提示',
     tooLong.ok === false && tooLong.reason.includes('文本过长'),
@@ -788,17 +1084,20 @@ async function testOcrSidebar(wc: WebContents): Promise<void> {
 
   // 翻译：中文源禁用 → 英文源启用 → 真实翻译 → 失败态 → 未安装态
   wc.send('SCREENSHOTS:translate-status', {
-    available: true,
     pluginDir: join(app.getPath('userData'), 'plugins', 'translate-locally'),
+    directions: {
+      'en-zh': { available: true, reason: null },
+      'zh-en': { available: false, reason: '未安装中译英模型' },
+    },
   })
   await sleep(150)
-  const zhTranslate = await evalJson<{ disabled: boolean; title: string } | null>(
+  const zhTranslate = await evalJson<{ disabled: boolean; title: string; text: string } | null>(
     wc,
-    `const b = document.querySelector('.snip-sidebar-translate'); return b ? { disabled: Boolean(b.disabled), title: b.title } : null;`,
+    `const b = document.querySelector('.snip-sidebar-translate'); return b ? { disabled: Boolean(b.disabled), title: b.title, text: b.textContent } : null;`,
   )
   check(
-    '中文源禁用翻译按钮',
-    Boolean(zhTranslate && zhTranslate.disabled && zhTranslate.title.includes('暂不支持中译英')),
+    '中文源缺少中译英模型时禁用并提示',
+    Boolean(zhTranslate && zhTranslate.disabled && zhTranslate.title.includes('未安装中译英模型') && zhTranslate.text === '译成英文'),
     zhTranslate,
   )
 
@@ -820,6 +1119,11 @@ async function testOcrSidebar(wc: WebContents): Promise<void> {
     enTranslate,
   )
 
+  // 用真实插件状态覆盖上面的假注入：可用时走真实翻译，不可用时按钮必须保持置灰
+  const enZhAvailable = translateStatus().directions['en-zh'].available
+  wc.send('SCREENSHOTS:translate-status', translateStatus())
+  await sleep(150)
+
   const translateClicked = await evalJson<boolean>(
     wc,
     `const b = document.querySelector('.snip-sidebar-translate'); if (!b || b.disabled) return false; b.click(); return true;`,
@@ -831,50 +1135,93 @@ async function testOcrSidebar(wc: WebContents): Promise<void> {
   )
   check(
     '翻译中按钮禁用且状态行提示',
-    Boolean(translateClicked && loadingState && loadingState.disabled && loadingState.text === '翻译中…' && loadingState.status === '本地翻译中…'),
-    loadingState,
+    enZhAvailable
+      ? Boolean(translateClicked && loadingState && loadingState.disabled && loadingState.text === '翻译中…' && loadingState.status === '本地翻译中…')
+      : Boolean(
+          loadingState &&
+            loadingState.disabled &&
+            loadingState.text === '译成中文' &&
+            loadingState.status.includes('未安装翻译插件'),
+        ),
+    { enZhAvailable, state: loadingState },
   )
 
-  let translated = ''
-  for (let i = 0; i < 30; i += 1) {
-    translated = await evalJson<string>(
+  if (enZhAvailable) {
+    let translated = ''
+    for (let i = 0; i < 30; i += 1) {
+      translated = await evalJson<string>(
+        wc,
+        `return (document.querySelector('.snip-sidebar-translation')?.textContent || '');`,
+      )
+      if (translated) break
+      await sleep(200)
+    }
+    const afterTranslate = await evalJson<{ status: string; original: string }>(
       wc,
-      `return (document.querySelector('.snip-sidebar-translation')?.textContent || '');`,
+      `return {
+       status: (document.querySelector('.snip-sidebar-status')?.textContent || ''),
+       original: (document.querySelector('.snip-sidebar-text')?.value || ''),
+     };`,
     )
-    if (translated) break
-    await sleep(200)
+    check(
+      '侧栏翻译成功并保留原文',
+      translated.includes('你好') && afterTranslate.original === 'Hello, how are you?',
+      { enZhAvailable, translated, ...afterTranslate },
+    )
+  } else {
+    const afterTranslate = await evalJson<{ translated: string; status: string; original: string }>(
+      wc,
+      `return {
+       translated: (document.querySelector('.snip-sidebar-translation')?.textContent || ''),
+       status: (document.querySelector('.snip-sidebar-status')?.textContent || ''),
+       original: (document.querySelector('.snip-sidebar-text')?.value || ''),
+     };`,
+    )
+    check(
+      '侧栏翻译成功并保留原文',
+      afterTranslate.translated === '' &&
+        afterTranslate.original === 'Hello, how are you?' &&
+        afterTranslate.status.includes('未安装翻译插件'),
+      { enZhAvailable, ...afterTranslate },
+    )
   }
-  const afterTranslate = await evalJson<{ status: string; original: string }>(
-    wc,
-    `return {
-       status: (document.querySelector('.snip-sidebar-status')?.textContent || ''),
-       original: (document.querySelector('.snip-sidebar-text')?.value || ''),
-     };`,
-  )
-  check(
-    '侧栏翻译成功并保留原文',
-    translated.includes('你好') && afterTranslate.original === 'Hello, how are you?',
-    { translated, ...afterTranslate },
-  )
 
-  wc.send('SCREENSHOTS:translate-result', { ok: false, reason: '自检翻译失败提示' })
-  await sleep(150)
-  const failedTranslate = await evalJson<{ status: string; original: string }>(
-    wc,
-    `return {
+  if (enZhAvailable) {
+    wc.send('SCREENSHOTS:translate-result', { ok: false, reason: '自检翻译失败提示' })
+    await sleep(150)
+    const failedTranslate = await evalJson<{ status: string; original: string }>(
+      wc,
+      `return {
        status: (document.querySelector('.snip-sidebar-status')?.textContent || ''),
        original: (document.querySelector('.snip-sidebar-text')?.value || ''),
      };`,
-  )
-  check(
-    '翻译失败保留原文并显示原因',
-    failedTranslate.status.includes('自检翻译失败提示') && failedTranslate.original === 'Hello, how are you?',
-    failedTranslate,
-  )
+    )
+    check(
+      '翻译失败保留原文并显示原因',
+      failedTranslate.status.includes('自检翻译失败提示') && failedTranslate.original === 'Hello, how are you?',
+      failedTranslate,
+    )
+  } else {
+    const failedTranslate = await evalJson<{ status: string; original: string }>(
+      wc,
+      `return {
+       status: (document.querySelector('.snip-sidebar-status')?.textContent || ''),
+       original: (document.querySelector('.snip-sidebar-text')?.value || ''),
+     };`,
+    )
+    check(
+      '翻译失败保留原文并显示原因',
+      failedTranslate.status.includes('未安装翻译插件') && failedTranslate.original === 'Hello, how are you?',
+      { enZhAvailable, ...failedTranslate },
+    )
+  }
 
   wc.send('SCREENSHOTS:translate-status', {
-    available: false,
     pluginDir: 'C:\\fake\\plugins\\translate-locally',
+    directions: {
+      'en-zh': { available: false, reason: '未安装翻译插件' },
+      'zh-en': { available: false, reason: '未安装翻译插件' },
+    },
   })
   await sleep(150)
   const missingTranslate = await evalJson<{ disabled: boolean; title: string; status: string } | null>(
@@ -992,11 +1339,29 @@ function testPinPlacementMath(): void {
       { scaleFactor, x: placement.x, y: placement.y },
     )
   }
+  const centered = computeHistoryPinPlacement({
+    imageWidth: 1000,
+    imageHeight: 600,
+    cursor: { x: 960, y: 540 },
+    display: { x: 0, y: 0, width: 1920, height: 1080, scaleFactor: 1 },
+  })
+  check(
+    '历史重贴落点 = 光标居中',
+    centered.width === 1000 && centered.height === 600 && centered.x === 460 && centered.y === 240,
+    centered,
+  )
+  const clamped = computeHistoryPinPlacement({
+    imageWidth: 1000,
+    imageHeight: 600,
+    cursor: { x: 1910, y: 1070 },
+    display: { x: 0, y: 0, width: 1920, height: 1080, scaleFactor: 1 },
+  })
+  check('历史重贴落点夹在显示器内', clamped.x === 920 && clamped.y === 480, clamped)
 }
 
 async function readPinMeta(win: BrowserWindow): Promise<PinMeta | null> {
   try {
-    const value = await win.webContents.executeJavaScript('window.snip.pin.meta()')
+    const value = await win.webContents.executeJavaScript('window.snipPin.meta()')
     if (value === null || typeof value !== 'object') return null
     return value as PinMeta
   } catch {
@@ -1072,6 +1437,28 @@ async function testPin(wc: WebContents, outcomes: CaptureOutcome[], display: Pin
 
     const meta = await readPinMeta(pinWin)
     check('贴图页 preload 可用', meta !== null, meta)
+    const pinBridge = await evalJson<{
+      hasMain: boolean
+      hasPin: boolean
+      pinMethods: string[]
+      mainKeys: string[]
+    }>(
+      pinWin.webContents,
+      `const methods = ['meta', 'ready', 'close', 'dragStart', 'dragMove', 'dragEnd', 'resizeStart', 'resizeMove', 'resizeEnd'];
+       return {
+         hasMain: typeof window.snip !== 'undefined',
+         hasPin: typeof window.snipPin === 'object',
+         pinMethods: typeof window.snipPin === 'object'
+           ? methods.filter((key) => typeof window.snipPin[key] === 'function')
+           : [],
+         mainKeys: typeof window.snip === 'object' ? Object.keys(window.snip) : [],
+       };`,
+    )
+    check(
+      '贴图页只暴露 snipPin，不暴露主窗 API',
+      pinBridge.hasMain === false && pinBridge.hasPin && pinBridge.pinMethods.length === 9,
+      pinBridge,
+    )
     const bounds = pinWin.getBounds()
     if (pinned && meta) {
       const scaleFactor = display.scaleFactor
@@ -1636,10 +2023,96 @@ async function compareLongHudButton(
   )
 }
 
+/**
+ * 遮罩页冻结原图：src 为整屏 dataURL，尺寸为物理像素。
+ * 普通截图与长图帧都以它为唯一像素源，避免两次抓屏带来的内容/偏移差异。
+ */
+interface OverlayFrameSource {
+  src: string
+  width: number
+  height: number
+  viewportWidth: number
+  viewportHeight: number
+}
+
+/**
+ * 用同一张冻结原图跑一遍遮罩页裁剪（__snipLongFrame），
+ * 与普通截图（库内部 canvas 裁剪）做同源比对。
+ */
+async function callOverlayLongFrame(
+  wc: WebContents,
+  source: OverlayFrameSource,
+  bounds: CaptureRegion,
+): Promise<{ image: ReturnType<typeof nativeImage.createFromDataURL>; scaleX: number; scaleY: number } | null> {
+  const origin = nativeImage.createFromDataURL(source.src)
+  const size = origin.getSize()
+  if (size.width < 1 || size.height < 1) return null
+  const scaleX = size.width / source.viewportWidth
+  const scaleY = size.height / source.viewportHeight
+  const plan = planLongFrameCrop(bounds, size.width, size.height, scaleX, scaleY)
+  const patch = origin.crop({ x: plan.x, y: plan.y, width: plan.width, height: plan.height })
+  if (patch.isEmpty()) return null
+  const payload = {
+    dataUrl: `data:image/png;base64,${patch.toPNG().toString('base64')}`,
+    crop: plan.crop,
+    bounds,
+  }
+  const result = await evalJson<string | null>(
+    wc,
+    `return (await window.__snipLongFrame?.(${JSON.stringify(payload)})) ?? null;`,
+  )
+  if (typeof result !== 'string' || !result.startsWith('data:image/png;base64,')) return null
+  const frame = nativeImage.createFromDataURL(result)
+  if (frame.isEmpty()) return null
+  return { image: frame, scaleX, scaleY }
+}
+
+/**
+ * 长图的像素对照需要一个不随时间变化的画面：屏幕上正在播放的视频/弹幕会让两次抓帧必然不同。
+ * 这里起一个固定位置、无动画的纯色块窗口作为被测对象，选区精确覆盖它。
+ */
+async function openStaticStage(): Promise<{ win: BrowserWindow; region: CaptureRegion }> {
+  // 与 runSelftest 选遮罩屏的口径一致：光标所在显示器，避免多屏时选区落在另一块屏上
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const width = 600
+  const height = 320
+  const x = display.workArea.x + 20
+  const y = display.workArea.y + 20
+  const win = new BrowserWindow({
+    x,
+    y,
+    width,
+    height,
+    frame: false,
+    resizable: false,
+    movable: false,
+    skipTaskbar: true,
+    focusable: false,
+    show: false,
+  })
+  const html = `<!doctype html><body style="margin:0;overflow:hidden">
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" shape-rendering="crispEdges">
+  <rect width="200" height="160" fill="#ff0000"/>
+  <rect x="200" width="200" height="160" fill="#00ff00"/>
+  <rect x="400" width="200" height="160" fill="#0000ff"/>
+  <rect y="160" width="200" height="160" fill="#ffffff"/>
+  <rect x="200" y="160" width="200" height="160" fill="#000000"/>
+  <rect x="400" y="160" width="200" height="160" fill="#808080"/>
+</svg></body>`
+  await win.loadURL(`data:text/html,${encodeURIComponent(html)}`)
+  win.showInactive()
+  await sleep(300)
+  return {
+    win,
+    region: { x: x - display.bounds.x, y: y - display.bounds.y, width, height },
+  }
+}
+
 async function testLongShot(wc: WebContents, outcomes: CaptureOutcome[], scaleFactor: number): Promise<void> {
+  const stage = await openStaticStage()
   // 基准：同一选区先走普通截图，用于逐像素比较长图首帧
   clipboard.clear()
-  const { area } = await startAndDrag(wc)
+  const { selection } = await startAndDrag(wc, stage.region)
   const normalCanvasImage = await evalJson<{ visible: boolean }>(
     wc,
     `const image = document.querySelector('.screenshots-canvas-image');
@@ -1648,7 +2121,32 @@ async function testLongShot(wc: WebContents, outcomes: CaptureOutcome[], scaleFa
      return { visible: s.display !== 'none' && s.visibility !== 'hidden' && Number(s.opacity) > 0 };`,
   )
   check('普通截图态选区内容可见', normalCanvasImage.visible, normalCanvasImage)
-  await doubleClickAt(wc, Math.round(area.width * 0.35), Math.round(area.height * 0.35))
+  // 同一张冻结原图既服务普通截图，也服务长图帧裁剪，彻底移除「抓两次桌面」变量
+  const overlaySource = await evalJson<OverlayFrameSource | null>(
+    wc,
+    `const img = document.querySelector('.screenshots-background-image');
+     if (!img || !img.src || !img.naturalWidth || !img.naturalHeight) return null;
+     return {
+       src: img.src,
+       width: img.naturalWidth,
+       height: img.naturalHeight,
+       viewportWidth: window.innerWidth,
+       viewportHeight: window.innerHeight,
+     };`,
+  )
+  const oracleFrame = overlaySource ? await callOverlayLongFrame(wc, overlaySource, selection) : null
+  check(
+    '普通截图态可取得冻结原图并生成同源长图帧',
+    Boolean(overlaySource && oracleFrame),
+    overlaySource && oracleFrame
+      ? { source: { width: overlaySource.width, height: overlaySource.height }, frame: oracleFrame.image.getSize() }
+      : { overlaySource: Boolean(overlaySource), oracleFrame: Boolean(oracleFrame) },
+  )
+  await doubleClickAt(
+    wc,
+    selection.x + Math.round(selection.width * 0.35),
+    selection.y + Math.round(selection.height * 0.35),
+  )
   await sleep(700)
   const normalImage = clipboard.readImage()
   const normalBitmap = normalImage.toBitmap()
@@ -1660,7 +2158,7 @@ async function testLongShot(wc: WebContents, outcomes: CaptureOutcome[], scaleFa
   await sleep(1500)
 
   clipboard.clear()
-  await startAndDrag(wc)
+  await startAndDrag(wc, stage.region)
   const started = await clickToolbarButton(wc, '长图')
   await sleep(1200)
   const hud = await evalJson<{
@@ -1783,22 +2281,31 @@ async function testLongShot(wc: WebContents, outcomes: CaptureOutcome[], scaleFa
   const longImage = clipboard.readImage()
   const longSize = longImage.getSize()
   const compareHeight = normalSize.height
-  const sizeMatches =
-    normalSize.width > 0 &&
-    longSize.width === normalSize.width &&
-    longSize.height >= compareHeight
-  const pixelStats = sizeMatches
-    ? compareBitmaps(
-        normalBitmap.subarray(0, normalSize.width * compareHeight * 4),
-        longImage.toBitmap().subarray(0, normalSize.width * compareHeight * 4),
-        normalSize.width,
-        compareHeight,
-      )
-    : null
   check(
-    '长图单帧像素与普通截图一致（同 DPI / 同通道 / 无额外重采样）',
-    Boolean(sizeMatches && pixelStats && pixelStats.mean <= 3 && pixelStats.ratioSame >= 0.95),
-    { normalSize, longSize, pixelStats },
+    '长图首帧尺寸与普通截图一致',
+    normalSize.width > 0 &&
+      longSize.width === normalSize.width &&
+      longSize.height >= compareHeight,
+    { normalSize, longSize },
+  )
+  const frameSize = oracleFrame?.image.getSize() ?? null
+  const pixelStats =
+    oracleFrame &&
+    frameSize &&
+    normalSize.width > 0 &&
+    frameSize.width === normalSize.width &&
+    frameSize.height >= compareHeight
+      ? compareBitmaps(
+          normalBitmap.subarray(0, normalSize.width * compareHeight * 4),
+          oracleFrame.image.toBitmap().subarray(0, normalSize.width * compareHeight * 4),
+          normalSize.width,
+          compareHeight,
+        )
+      : null
+  check(
+    '长图单帧像素与普通截图一致（同一冻结原图 / 同 DPI / 同通道）',
+    Boolean(pixelStats && pixelStats.mean <= 3 && pixelStats.ratioSame >= 0.95),
+    { normalSize, frameSize, pixelStats },
   )
 
   const ocrClicked = await evalJson<boolean>(
@@ -1873,6 +2380,7 @@ async function testLongShot(wc: WebContents, outcomes: CaptureOutcome[], scaleFa
     await screenshotService.stopCapture()
     await sleep(300)
   }
+  stage.win.destroy()
 }
 
 export async function runSelftest(): Promise<void> {
@@ -1952,7 +2460,7 @@ export async function runSelftest(): Promise<void> {
     ['copy', 'save', 'pin', 'longshot'].every((source) => sources.has(source as never)),
     { total: history.length, sources: [...sources] },
   )
-  check('截图历史沿用 50 条上限', history.length <= 50, { total: history.length })
+  check('截图历史默认档位为 10', loadConfig().historyLimit === 10, { limit: loadConfig().historyLimit })
   let storedItems: number | null = null
   try {
     const raw = JSON.parse(readFileSync(join(pinHistoryDir(), 'history.json'), 'utf8')) as { items?: unknown[] }
@@ -1964,6 +2472,18 @@ export async function runSelftest(): Promise<void> {
     stored: storedItems,
     listed: history.length,
   })
+
+  // 档位切换：补两条记录，确保超过 5 条后再切换，验证按新上限裁剪
+  const pixel = nativeImage.createFromBitmap(Buffer.alloc(4, 255), { width: 1, height: 1 }).toPNG()
+  await recordPinHistory(pixel, 1, 1, 'copy')
+  await recordPinHistory(pixel, 1, 1, 'copy')
+  saveConfig({ historyLimit: 5 })
+  await setPinHistoryLimit(5)
+  const five = await listPinHistory()
+  check('截图历史切到 5 档后裁剪到 5 条', five.length === 5, { total: five.length })
+  saveConfig({ historyLimit: 10 })
+  await setPinHistoryLimit(10)
+  check('截图历史档位切回 10 生效', loadConfig().historyLimit === 10, { limit: loadConfig().historyLimit })
 
   screenshotService.dispose()
   console.log(failures === 0 ? '[selftest] ALL PASS' : `[selftest] ${failures} FAILED`)

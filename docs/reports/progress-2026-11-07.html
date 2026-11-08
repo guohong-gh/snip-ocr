@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>snip-ocr 项目进度汇报 · 2026-11-07</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --ink1: #1a1e24;
+    --ink2: #4a525d;
+    --ink3: #7b8391;
+    --line: #e5e8ed;
+    --accent: #2f6feb;
+    --done: #1f9d55;
+    --wait: #c2871a;
+    --closed: #98a1ac;
+    --idle: #dfe3e9;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 40px 24px 64px;
+    background: var(--bg);
+    color: var(--ink1);
+    font: 14px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; }
+
+  header { margin-bottom: 24px; }
+  h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: -0.01em; }
+  .meta { color: var(--ink3); font-size: 13px; }
+  .meta code { background: #eceff4; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 22px 24px;
+    margin-bottom: 16px;
+  }
+
+  .hero { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; }
+  .hero-figure { display: flex; align-items: baseline; gap: 6px; }
+  .hero-num { font-size: 52px; font-weight: 650; letter-spacing: -0.03em; line-height: 1; color: var(--accent); }
+  .hero-pct { font-size: 20px; font-weight: 600; color: var(--accent); }
+  .hero-body { flex: 1 1 420px; min-width: 260px; }
+  .hero-label { font-size: 13px; color: var(--ink2); margin-bottom: 10px; }
+  .note { margin: 10px 0 0; font-size: 12px; color: var(--ink3); }
+
+  .chips { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 18px; }
+  .chip {
+    flex: 1 1 180px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
+    background: #fbfcfd;
+  }
+  .chip b { display: block; font-size: 18px; font-weight: 650; }
+  .chip span { font-size: 12px; color: var(--ink3); }
+
+  .bar {
+    position: relative;
+    height: 8px;
+    background: var(--idle);
+    border-radius: 99px;
+    overflow: hidden;
+  }
+  .bar > span {
+    display: block;
+    height: 100%;
+    width: var(--w);
+    border-radius: 99px;
+    background: var(--accent);
+    animation: grow .7s cubic-bezier(.2,.7,.3,1);
+  }
+  .bar.lg { height: 12px; }
+  .bar > span.is-done { background: var(--done); }
+  .bar > span.is-wait { background: var(--wait); }
+  .bar > span.is-closed { background: var(--closed); }
+  @keyframes grow { from { width: 0; } to { width: var(--w); } }
+  @media (prefers-reduced-motion: reduce) {
+    .bar > span { animation: none; }
+  }
+
+  h2 {
+    margin: 28px 0 12px;
+    font-size: 15px;
+    font-weight: 620;
+    color: var(--ink1);
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  h2 small { font-weight: 400; font-size: 12px; color: var(--ink3); }
+
+  .stage { display: grid; grid-template-columns: 112px 1fr 68px; gap: 14px; align-items: center; padding: 9px 0; }
+  .stage + .stage { border-top: 1px solid #f1f3f6; }
+  .stage-name { font-size: 13px; color: var(--ink2); }
+  .stage-name b { color: var(--ink1); font-weight: 600; }
+  .stage-val { text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--ink2); }
+
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--ink3);
+    padding: 0 10px 8px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  tbody td { padding: 9px 10px 9px 0; border-bottom: 1px solid #f2f4f7; vertical-align: middle; }
+  tbody tr:last-child td { border-bottom: none; }
+  .id { font-variant-numeric: tabular-nums; color: var(--ink3); white-space: nowrap; width: 62px; }
+  .name { color: var(--ink1); }
+  .name em { display: block; font-style: normal; font-size: 12px; color: var(--ink3); }
+  .col-stage { width: 62px; color: var(--ink3); font-size: 12px; }
+  .col-bar { width: 168px; }
+  .col-pct { width: 52px; text-align: right; font-size: 12px; color: var(--ink2); font-variant-numeric: tabular-nums; }
+
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 14px; font-size: 12px; color: var(--ink3); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
+
+  .decide { border-left: 3px solid var(--accent); padding-left: 14px; }
+  .decide p { margin: 0 0 10px; color: var(--ink2); }
+  .opt { margin: 0 0 6px; font-size: 13px; color: var(--ink2); }
+  .opt b { color: var(--ink1); }
+  .rec {
+    margin-top: 12px;
+    font-size: 13px;
+    color: #16794a;
+    background: #eef8f2;
+    border-radius: 8px;
+    padding: 8px 12px;
+  }
+  ul.risk { margin: 0; padding-left: 18px; color: var(--ink2); font-size: 13px; }
+  ul.risk li { margin-bottom: 8px; }
+  ul.risk b { color: var(--ink1); font-weight: 600; }
+
+  footer { margin-top: 28px; color: var(--ink3); font-size: 12px; }
+  footer code { background: #eceff4; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>snip-ocr 项目进度</h1>
+    <div class="meta">
+      汇报日期 2026-11-07 · 口径：12 个追踪项（11 项已交付 / 1 项待发布） ·
+      数据采集：<code>git</code> 命令输出 + <code>npm run build</code> + <code>electron . --selftest</code> 实跑
+    </div>
+  </header>
+
+  <!-- 整体 -->
+  <section class="card">
+    <div class="hero">
+      <div class="hero-figure">
+        <span class="hero-num">92</span><span class="hero-pct">%</span>
+      </div>
+      <div class="hero-body">
+        <div class="hero-label">整体进度 · 12 个追踪项等权</div>
+        <div class="bar lg"><span style="--w: 91.7%"></span></div>
+        <p class="note">
+          算法：各项完成度之和 ÷ 追踪项数。11 项已交付（功能 7、质量 2、重构 2）按 100% 计，
+          1 项待办（发布 0.4.2）按 0% 计。
+          = (1100 + 0) ÷ 1200 = 91.7%，取整 92%。
+          文档计数与开始菜单死链属 0.4.2 发布清单内的收尾项，未单列追踪项，见下文。
+        </p>
+      </div>
+    </div>
+
+    <div class="chips">
+      <div class="chip"><b>1 项</b><span>唯一阻塞：0.4.2 待发布</span></div>
+      <div class="chip"><b>159 / 9 / 0</b><span>selftest PASS / INFO / FAIL · 末行 ALL PASS</span></div>
+      <div class="chip"><b>44 项</b><span>未提交改动 · 23 修改 + 21 未跟踪文件</span></div>
+      <div class="chip"><b>f65bdad</b><span>HEAD = tag v0.4.1 · main 与 origin/main 0 / 0</span></div>
+    </div>
+
+    <div class="legend">
+      <span><i style="background: var(--done)"></i>已完成</span>
+      <span><i style="background: var(--wait)"></i>待决策 / 待发布</span>
+      <span><i style="background: var(--closed)"></i>已知残留</span>
+      <span><i style="background: var(--idle)"></i>未开始</span>
+    </div>
+  </section>
+
+  <!-- 阶段 -->
+  <h2>发布线进度 <small>按版本阶段汇总</small></h2>
+  <section class="card">
+    <div class="stage">
+      <div class="stage-name"><b>0.2.x</b> 基础能力</div>
+      <div class="bar"><span class="is-done" style="--w: 100%"></span></div>
+      <div class="stage-val">100%</div>
+    </div>
+    <div class="stage">
+      <div class="stage-name"><b>0.3.0</b> 长截图与历史</div>
+      <div class="bar"><span class="is-done" style="--w: 100%"></span></div>
+      <div class="stage-val">100%</div>
+    </div>
+    <div class="stage">
+      <div class="stage-name"><b>0.4.0</b> 界面与插件</div>
+      <div class="bar"><span class="is-done" style="--w: 100%"></span></div>
+      <div class="stage-val">100%</div>
+    </div>
+    <div class="stage">
+      <div class="stage-name"><b>0.4.1</b> 自检稳定性</div>
+      <div class="bar"><span class="is-done" style="--w: 100%"></span></div>
+      <div class="stage-val">100%</div>
+    </div>
+    <div class="stage">
+      <div class="stage-name"><b>0.4.2</b> 重构收口与发布</div>
+      <div class="bar"><span class="is-wait" style="--w: 0%"></span></div>
+      <div class="stage-val">0%</div>
+    </div>
+    <p class="note">
+      仓库现存 tag 为 <code>v0.2.2</code> / <code>v0.3.0</code> / <code>v0.4.0</code> / <code>v0.4.1</code>；
+      0.2.0 与 0.2.1 属发布线记录，仓库内没有对应 tag。
+      <code>package.json</code> 已改为 0.4.2，但该改动尚未提交，HEAD 仍停在 <code>f65bdad</code>。
+    </p>
+  </section>
+
+  <!-- 任务明细 -->
+  <h2>交付与待办明细 <small>F01–F07 / Q01–Q02 / R01–R02 / P01</small></h2>
+  <section class="card">
+    <table>
+      <thead>
+        <tr>
+          <th class="id">编号</th>
+          <th>事项</th>
+          <th class="col-stage">类别</th>
+          <th class="col-bar">进度</th>
+          <th class="col-pct">%</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="id">F01</td>
+          <td class="name">截图与贴图 <em>全局快捷键截图（Alt + A）与贴出（Alt + P），贴图窗口常驻屏幕</em></td>
+          <td class="col-stage">能力</td>
+          <td class="col-bar"><div class="bar"><span class="is-done" style="--w: 100%"></span></div></td>
+          <td class="col-pct">100</td>
+        </tr>
+        <tr>
+          <td class="id">F02</td>
+          <td class="name">WinRT OCR 双引擎词框合并 <em>两套识别引擎的词框统一合并，输出一份可编辑文本</em></td>
+          <td class="col-stage">能力</td>
+          <td class="col-bar"><div class="bar"><span class="is-done" style="--w: 100%"></span></div></td>
+          <td class="col-pct">100</td>
+        </tr>
+        <tr>
+          <td class="id">F03</td>
+          <td class="name">被动跟随长截图 + 拼接 v2 <em>滚动跟随抓帧，拼接算法升级，减少接缝错位</em></td>
+          <td class="col-stage">能力</td>
+          <td class="col-bar"><div class="bar"><span class="is-done" style="--w: 100%"></span></div></td>
+          <td class="col-pct">100</td>
+        </tr>
+        <tr>
+          <td class="id">F04</td>
+          <td class="name">统一截图历史 50 条 <em>汇总复制 / 另存 / 贴图 / 长图四种来源，上限 50 条</em></td>
+          <td class="col-stage">能力</td>
+          <td class="col-bar"><div class="bar"><span class="is-done" style="--w: 100%"></span></div></td>
+          <td class="col-pct">100</td>
+        </tr>
+        <tr>
+          <td class="id">F05</td>
+          <td class="name">主窗 UI 重设计与可缩放 <em>四区信息架构，窗口 480×400 – 1200×900，默认 680×560</em></td>
+          <td class="col-stage">能力</td>
+          <td class="col-bar"><div class="bar"><span class="is-done" style="--w: 100%"></span></div></td>
+          <td class="col-pct">100</td>
+        </tr>
+        <tr>
+          <td class="id">F06</td>
+          <td class="name">侧栏可拖拽 <em>截图历史侧栏支持按住拖拽调整宽度</em></td>
+          <td class="col-stage">能力</td>
+          <td class="col-bar"><div class="bar"><span class="is-done" style="--w: 100%"></span></div></td>
+          <td class="col-pct">100</td>
+        </tr>
+        <tr>
+          <td class="id">F07</td>
+          <td class="name">可选离线英译中插件 <em>translateLocally，仅 en→zh，主包零增量</em></td>
+          <td class="col-stage">能力</td>
+          <td class="col-bar"><div class="bar"><span class="is-done" style="--w: 100%"></span></div></td>
+          <td class="col-pct">100</td>
+        </tr>
+        <tr>
+          <td class="id">Q01</td>
+          <td class="name">质量基线 <em>实测 159 PASS / 9 INFO / 0 FAIL，末行 <code>[selftest] ALL PASS</code></em></td>
+          <td class="col-stage">质量</td>
+          <td class="col-bar"><div class="bar"><span class="is-done" style="--w: 100%"></span></div></td>
+          <td class="col-pct">100</td>
+        </tr>
+        <tr>
+          <td class="id">Q02</td>
+          <td class="name">长图单帧像素断言治理 <em>改为「同一张冻结原图过两条裁剪管线」比对，实测 mean=0 / max=0 / ratioSame=1 / shift={0,0}；新增纯函数 <code>planLongFrameCrop</code>，<code>extractFrame</code> 复用同一坐标口径，行为不变</em></td>
+          <td class="col-stage">质量</td>
+          <td class="col-bar"><div class="bar"><span class="is-done" style="--w: 100%"></span></div></td>
+          <td class="col-pct">100</td>
+        </tr>
+        <tr>
+          <td class="id">R01</td>
+          <td class="name">IPC / 契约层拆分重构 <em><code>src/main/ipc/</code>、<code>src/shared/contracts/</code>、<code>appState.ts</code>、<code>overlayBridge.ts</code>、<code>longShot.ts</code>、<code>overlayProtocol.ts</code>；已完成但未提交</em></td>
+          <td class="col-stage">重构</td>
+          <td class="col-bar"><div class="bar"><span class="is-done" style="--w: 100%"></span></div></td>
+          <td class="col-pct">100</td>
+        </tr>
+        <tr>
+          <td class="id">R02</td>
+          <td class="name">术语统一 <em>GLOSSARY / PRODUCT / README / QODER / USER_GUIDE 等文案口径对齐；已完成但未提交</em></td>
+          <td class="col-stage">重构</td>
+          <td class="col-bar"><div class="bar"><span class="is-done" style="--w: 100%"></span></div></td>
+          <td class="col-pct">100</td>
+        </tr>
+        <tr>
+          <td class="id">P01</td>
+          <td class="name">发布 0.4.2 <em>唯一阻塞点。发布前需：提交 44 项改动 → 同步文档计数 135 / 136 → 159 / 9 → 清理开始菜单死链 → 打 tag <code>v0.4.2</code></em></td>
+          <td class="col-stage">发布</td>
+          <td class="col-bar"><div class="bar"><span class="is-wait" style="--w: 0%"></span></div></td>
+          <td class="col-pct">0</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 已知残留 -->
+  <h2>已知残留 <small>3 项，均归入 0.4.2 发布清单，不计入 92% 追踪口径</small></h2>
+  <section class="card">
+    <table>
+      <thead>
+        <tr>
+          <th class="id">编号</th>
+          <th>残留项</th>
+          <th class="col-stage">级别</th>
+          <th class="col-bar">状态</th>
+          <th class="col-pct">%</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="id">K-1</td>
+          <td class="name">44 项改动未提交 <em>23 个已跟踪文件修改 + 21 个未跟踪文件；工作区无版本历史可回滚，是发布前的最大风险</em></td>
+          <td class="col-stage">P0</td>
+          <td class="col-bar"><div class="bar"><span class="is-closed" style="--w: 100%"></span></div></td>
+          <td class="col-pct">记录</td>
+        </tr>
+        <tr>
+          <td class="id">K-2</td>
+          <td class="name">文档计数与实测不一致 <em>QODER.md 写 135 项 PASS，USER_GUIDE.md 写 135 / 136 PASS，实测为 159 PASS / 9 INFO</em></td>
+          <td class="col-stage">P2</td>
+          <td class="col-bar"><div class="bar"><span class="is-closed" style="--w: 100%"></span></div></td>
+          <td class="col-pct">记录</td>
+        </tr>
+        <tr>
+          <td class="id">K-3</td>
+          <td class="name">开始菜单残留死链快捷方式 <em>指向已删除的安装目录；具体快捷方式名称与路径未采集，需在安装环境复查</em></td>
+          <td class="col-stage">P2</td>
+          <td class="col-bar"><div class="bar"><span class="is-closed" style="--w: 100%"></span></div></td>
+          <td class="col-pct">记录</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="note">“记录”表示已确认存在但尚未处理，不代表进度百分比。</p>
+  </section>
+
+  <!-- 决策 + 风险 -->
+  <div class="cols">
+    <section class="card">
+      <h2 style="margin-top:0">待决策</h2>
+      <div class="decide">
+        <p><b>问题：0.4.2 用哪种提交与发布方式收口</b></p>
+        <p class="opt"><b>A</b> 只提交版本号与文档计数，立即发 0.4.2｜利：发布面最小、最快｜弊：159 / 9 的验证跑的是含重构的代码，发布对象与验证对象不一致，等于让重构继续漂在工作区</p>
+        <p class="opt"><b>B</b> 44 项改动一次性提交后发 0.4.2｜利：一次收口，工作区立刻干净｜弊：重构与发布绑在同一提交，出问题只能整体回滚，粒度太粗</p>
+        <p class="opt"><b>C</b> 拆两个提交：先提交 IPC / 契约层重构与术语统一（含 <code>planLongFrameCrop</code>），再提交版本号 + 文档计数，然后打 tag <code>v0.4.2</code>｜利：发布对象与验证对象一致，重构可单独回滚，历史可审计｜弊：需要两次提交与两轮验证，多花一点时间</p>
+      </div>
+      <p class="rec">推荐 C：重构先行单独落盘并复核 159 / 9，再以「版本号 + 文档计数」的干净提交发布 0.4.2，tag 指向后者。</p>
+    </section>
+
+    <section class="card">
+      <h2 style="margin-top:0">风险</h2>
+      <ul class="risk">
+        <li><b>44 项未提交改动无回滚保护</b>：HEAD 仍是 <code>f65bdad</code>，重构、术语统一与本期报告全部只存在于工作区。</li>
+        <li><b>验证对象与发布对象可能不一致</b>：若只提交版本号就发版，159 / 9 覆盖的是含重构的代码，而发布内容不含它。</li>
+        <li><b>文档计数落后 24 条</b>：QODER 写 135、USER_GUIDE 写 135 / 136，与实测 159 差距会让使用者误判质量基线。</li>
+        <li><b>开始菜单死链影响首次体验</b>：具体快捷方式名称与路径未采集，需在安装环境逐项复查后清理。</li>
+      </ul>
+    </section>
+  </div>
+
+  <footer>
+    数据来源：<code>git log -1</code>（HEAD <code>f65bdad5d81dd88427378d2a60b8361711eed850</code>，tag <code>v0.4.1</code>，main 与 <code>origin/main</code> 0 / 0）·
+    <code>git status --porcelain</code> 与 <code>git ls-files --others --exclude-standard</code>（44 项 = 23 修改 + 21 未跟踪文件；porcelain 顶层条目为 32，因未跟踪目录不展开）·
+    <code>package.json</code> version <code>0.4.2</code>（未提交）·
+    <code>npm run build</code> 通过 · <code>electron . --selftest</code> 实跑 159 PASS / 9 INFO / 0 FAIL，末行 <code>[selftest] ALL PASS</code><br />
+    采集时间：2026-11-07（Asia/Shanghai）· 未采集项：开始菜单死链的具体快捷方式路径、打包态 0.4.2 的 <code>--selftest</code> 结果、安装包体积与分发数据
+  </footer>
+
+</div>
+</body>
+</html>

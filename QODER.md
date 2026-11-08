@@ -11,7 +11,7 @@ Electron 桌面截图工具，用来平替系统截图：主窗口 + 托盘常�
 
 - 语言 / 框架：TypeScript 5.9.3（strict，双向配置 `tsconfig.node.json` + `tsconfig.web.json`）、Electron 33.4.11、React 19.3.1、Vite 8.3.5 + electron-vite 6.0.0
 - 关键依赖：`electron-screenshots` 0.6.2（遮罩窗与选区，内部用 `node-screenshots` 原生捕获，`desktopCapturer` 兜底）、`electron-builder` 26.18.0（NSIS + portable）
-- 数据库 / 消息队列 / 外部服务：**无**。持久化只在 `data/`：`config.json`（原子写：临时文件 + rename）、`icons/custom.png`（自定义图标）、`pin-history/`（截图历史，上限 50 条）、`ocr/`（OCR 临时图，结束即删）。打包态 `userData` 被指到 exe 同级 `data/`；安装目录不可写时回退 `%APPDATA%\snip-ocr`。卸载必须无残留（[build/installer.nsh](./build/installer.nsh) 兜底清理 `$APPDATA\snip-ocr`）
+- 数据库 / 消息队列 / 外部服务：**无**。持久化只在 `data/`：`config.json`（原子写：临时文件 + rename）、`icons/custom.png`（自定义图标）、`pin-history/`（截图历史，默认保留 10 条，可在设置中选 5/10/50）、`ocr/`（OCR 临时图，结束即删）。打包态 `userData` 被指到 exe 同级 `data/`；安装目录不可写时回退 `%APPDATA%\snip-ocr`。卸载必须无残留（[build/installer.nsh](./build/installer.nsh) 兜底清理 `$APPDATA\snip-ocr`）
 - 包管理器：**npm**（本仓库用 `package-lock.json`，不要改成 pnpm）
 - Lint 工具：**未引入**。静态检查由 `npm run typecheck` 承担；新增 lint 依赖属未批准依赖，需先同意
 
@@ -41,8 +41,8 @@ src/
 │   ├── stitch.ts         # 长图纵向拼接：整行灰度指纹多候选打分、固定表头屏蔽、增量重叠（供实时预览）、20000 物理像素分段导出
 │   ├── overlayUi.ts      # 遮罩注入：6 按钮工具栏（含长图）、长图细边框 HUD、实时预览缩略窗、可拖拽 OCR 侧栏、主题图标、裁剪取图
 │   ├── pin.ts            # 贴图窗口：几何换算、创建/显示、拖拽缩放、单张关闭、临时图清理
-│   ├── pinHistory.ts     # 截图历史：复制/另存/贴图/长图四种来源，原图/缩略图落盘、history.json 索引、上限 50 条淘汰
-│   ├── ocr.ts            # Windows 本地 OCR：临时图、PowerShell/WinRT 桥、超时与文本规范化
+│   ├── pinHistory.ts     # 截图历史：复制/另存/贴图/长图四种来源，原图/缩略图落盘、history.json 索引、默认 10 条（可选 5/10/50）淘汰
+│   ├── ocr.ts            # Windows 本地 OCR：临时图、PowerShell/WinRT 桥、15 秒超时、文本规范化、长图分块与系统已装语言选择
 │   ├── config.ts         # userData 读写、配置归一化、打包态 data/ 目录与旧目录迁移
 │   └── selftest.ts       # 合成事件 + DOM 断言的自动化验收
 ├── preload/index.ts      # contextBridge，只暴露 window.snip
@@ -63,12 +63,12 @@ scripts/
 - ❌ 禁止把截图逻辑写出 [src/main/screenshot.ts](./src/main/screenshot.ts)（不得散落到 `index.ts`）；贴图窗口逻辑集中在 [src/main/pin.ts](./src/main/pin.ts)
 - ❌ 禁止在 `src/shared/ipc.ts` 之外手写 IPC 通道名字面量，两端只能从它取值
 - ❌ 禁止引入任何网络请求代码、License / 授权校验代码、支付 / 登录 / 云服务代码
-- ✅ 唯一允许的外部二进制例外面（必须同时满足下列全部验收条件）：把 translateLocally 作为**可选、离线、用户手动安装**的本地翻译插件，仅提供英译中。
+- ✅ 唯一允许的外部二进制例外面（必须同时满足下列全部验收条件）：把 translateLocally 作为**可选、离线、用户手动安装**的本地翻译插件，支持中英双向（en→zh / zh→en）。
   1. 主包与 asar 内不得包含插件二进制或模型：`electron-builder.yml` 的 `files` 必须排除 `plugins/**`；未安装时「译成中文」入口置灰，并在状态行提示插件放置路径。
-  2. 只允许以 `-m <model> -i <input> -o <output>` 调用，工作目录必须是插件内 `models/`；源码中不得出现 `-a` / `-d` 参数，不得出现 HTTP / HTTPS / WebSocket / telemetry / 自动更新 / 模型下载代码；selftest 必须保留「翻译实现不含联网参数」断言。
+  2. 只允许以 `-m <model> -i <input> -o <output>` 调用，工作目录必须是插件内 `models/`；源码中不得出现 `-a` / `-d` 参数，不得出现 HTTP / HTTPS / WebSocket / telemetry / 自动更新代码；不得自行下载模型，未来接入需用户提供资产并校验体积（≤200 MiB）与哈希；selftest 必须保留「翻译实现不含联网参数」断言。
   3. 插件所有文件的 SHA256 固定在 [README.md](./README.md) 的「离线翻译插件」一节，替换任何文件需重新审批并同步哈希。
-  4. 仅支持英译中（en→zh）；中译英不接入，入口必须置灰并提示「暂不支持中译英」。
-- ❌ 禁止做标注与真实的更新服务 / 自动下载安装（截图工具栏只允许 OCR / 贴图 / 另存为 / 长图 / 取消 / 确定；贴图页只渲染图片与拖拽缩放，不得引入编辑器/标注逻辑）。截图历史保留 50 条，属既有功能；设置里的「检查更新」入口保留，但必须维持离线桩实现：不联网、不下载，只报告当前版本
+  4. 支持中英双向（en→zh / zh→en）；缺少对应方向的模型时，该方向入口必须置灰并如实提示缺失，不得下载模型、不得返回假译文。
+- ❌ 禁止做标注与真实的更新服务 / 自动下载安装（截图工具栏只允许 OCR / 贴图 / 另存为 / 长图 / 取消 / 确定；贴图页只渲染图片与拖拽缩放，不得引入编辑器/标注逻辑）。截图历史默认保留 10 条，可在设置中选 5/10/50，改档位时按新上限裁剪已有记录，属既有功能；设置里的「检查更新」入口保留，但必须维持离线桩实现：不联网、不下载，只报告当前版本；正式分发采用代码签名 + 官网手动下载安装包，不做自动更新
 - ❌ 禁止把 OCR 写出 [src/main/ocr.ts](./src/main/ocr.ts)：只允许 Windows.Media.Ocr 本地识别，不得联网、不得引入 OCR 依赖或远程服务；失败要如实通知，不得静默吞掉
 - ❌ 禁止识字后自动覆盖剪贴板：结果必须进入遮罩内可编辑侧栏（[src/main/overlayUi.ts](./src/main/overlayUi.ts)），由用户点「复制」才写入剪贴板
 - ❌ 禁止让主窗口关闭即退出：主窗关闭只隐藏到托盘，退出只走托盘菜单或设置 → 通用底部的「退出 snip-ocr」；截图开始前必须隐藏主窗，结束后按原可见状态恢复
@@ -91,8 +91,8 @@ scripts/
 
 1. `npm run typecheck` —— 两份 tsconfig（node / web）均零报错
 2. `npm run build` —— 产出 `out/main`、`out/preload`、`out/renderer`（含独立 `pin.html`）
-3. `npm run selftest` —— 要求末行输出 `[selftest] ALL PASS`（最近一次开发态实跑：135 项 PASS + 9 项 INFO，其中 1 条 INFO 为 `Alt+A` 被占用时的注册结果；覆盖主窗首页/状态条/设置三页/图标预览、工具栏 6 动作（含独立贴图、确定复制、长图收起遮罩进入 HUD/选区透出真实屏幕（冻结图不可见）/实时预览在选区外且穿透/HUD 按钮与工具栏同款/完成复制/完成后另存与 OCR/关闭/长图单帧与普通截图像素一致）、拼接核心（重叠行数/容差打分/固定表头/到底指纹/分段导出/颜色 round-trip）、双击复制、保存、贴图创建/尺寸/位置/1:1/滚轮缩放与百分比/Ctrl+0/四角手柄/拖拽不回弹/8 向缩放/单张关闭/多贴图、遮罩内 OCR 侧栏动态选边/标题条拖拽不越界/textarea 仍可输入选中/编辑/字数/手动复制/关闭/迟到结果丢弃、贴图快捷键注册、Windows OCR 识别、截图历史覆盖复制/另存/贴图/长图四种来源且索引落盘、取消不记录、离线翻译（GB18030 解码/英译中真实链路/英文源启用/中文源置灰/翻译中与失败态/未安装提示与安装路径/超长拒绝/源码不含联网参数））。验证 dev 的 http 页面可跑 `npx electron-vite dev -- --selftest`（`--` 之后的参数会透传给 Electron）
-4. 改动涉及打包、图标或依赖时，追加 `npm run pack`，并对 `dist/win-unpacked/snip-ocr.exe --selftest` 再跑一次验收（最近一次打包版实跑：136 项 PASS + 9 项 INFO，0 FAIL，含「运行数据位于程序目录 data/」「旧 %APPDATA% 已清理」「贴图走 snip-pin://」，以及把插件放到 `data\plugins\translate-locally` 后「翻译插件状态 pluginDir 指向程序目录 data/」「英译中链路可用」「超长文本拒绝翻译并提示」；清理测试插件后 `win-unpacked` 与 asar 内均无 `plugins/`）。改动涉及安装/数据目录时，还要做一次静默安装 → 运行 → 静默卸载，确认安装目录、`%APPDATA%\snip-ocr`、快捷方式与卸载注册表项全部清除
+3. `npm run selftest` —— 要求末行输出 `[selftest] ALL PASS`（最近一次开发态实跑：159 项 PASS + 9 项 INFO，其中 1 条 INFO 为 `Alt+A` 被占用时的注册结果；覆盖主窗首页/状态条/设置三页/图标预览、工具栏 6 动作（含独立贴图、确定复制、长图收起遮罩进入 HUD/选区透出真实屏幕（冻结图不可见）/实时预览在选区外且穿透/HUD 按钮与工具栏同款/完成复制/完成后另存与 OCR/关闭/长图单帧与普通截图像素一致）、拼接核心（重叠行数/容差打分/固定表头/到底指纹/分段导出/颜色 round-trip）、双击复制、保存、贴图创建/尺寸/位置/1:1/滚轮缩放与百分比/Ctrl+0/四角手柄/拖拽不回弹/8 向缩放/单张关闭/多贴图、遮罩内 OCR 侧栏动态选边/标题条拖拽不越界/textarea 仍可输入选中/编辑/字数/手动复制/关闭/迟到结果丢弃、贴图快捷键注册、Windows OCR 识别、截图历史覆盖复制/另存/贴图/长图四种来源且索引落盘、取消不记录、离线翻译（GB18030 解码/英译中真实链路/英文源启用/翻译中与失败态/未安装提示与安装路径/超长拒绝/源码不含联网参数））。验证 dev 的 http 页面可跑 `npx electron-vite dev -- --selftest`（`--` 之后的参数会透传给 Electron）
+4. 改动涉及打包、图标或依赖时，追加 `npm run pack`，并对 `dist/win-unpacked/snip-ocr.exe --selftest` 再跑一次验收（上一轮打包版实跑：136 项 PASS + 9 项 INFO，0 FAIL，本轮未复测待核实，含「运行数据位于程序目录 data/」「旧 %APPDATA% 已清理」「贴图走 snip-pin://」，以及把插件放到 `data\plugins\translate-locally` 后「翻译插件状态 pluginDir 指向程序目录 data/」「英译中链路可用」「超长文本拒绝翻译并提示」；清理测试插件后 `win-unpacked` 与 asar 内均无 `plugins/`）。改动涉及安装/数据目录时，还要做一次静默安装 → 运行 → 静默卸载，确认安装目录、`%APPDATA%\snip-ocr`、快捷方式与卸载注册表项全部清除
    打包环境注意：无外网时 `@electron/get` 会卡在校验 Electron 缓存，需设 `ELECTRON_MIRROR`（本机用 `https://npmmirror.com/mirrors/electron/`）；若 IDE/索引器锁住新解压的 `default_app.asar` 导致 `EPERM/EBUSY`，把输出指到工作区外（`npx electron-builder --config.directories.output=<临时目录>`）再拷回 `dist/`。
 
 任何一项失败先修复再继续；新增交互要同步在 [src/main/selftest.ts](./src/main/selftest.ts) 补断言，不接受只靠人工点击。

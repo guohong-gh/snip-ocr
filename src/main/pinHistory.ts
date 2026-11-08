@@ -1,13 +1,21 @@
-import { app, clipboard, dialog, nativeImage, screen } from 'electron'
+import { app, clipboard, dialog, nativeImage } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
-import { HISTORY_SOURCES, type HistorySource, type PinHistoryItem, type SetHotkeyResult } from '@shared/ipc'
-import type { PinCaptureInput } from './pin'
+import {
+  HISTORY_SOURCES,
+  type HistoryLimit,
+  type HistorySource,
+  type PinHistoryItem,
+  type SetHotkeyResult,
+} from '@shared/ipc'
+import { loadConfig } from './config'
 
-/** 默认保留最近 50 条，超出按最旧淘汰；不提供设置项 */
-const PIN_HISTORY_LIMIT = 50
+/** 当前保留档位，动态读取配置，切换后立即生效 */
+function historyLimit(): HistoryLimit {
+  return loadConfig().historyLimit
+}
 const INDEX_FILE = 'history.json'
 const FILE_PREFIX = 'history-'
 /** 缩略图最长边（像素），列表按 64×42 DIP 展示，足够 2x 屏清晰 */
@@ -124,9 +132,10 @@ async function ensureLoaded(): Promise<StoredPinHistoryItem[]> {
   }
 
   // 原图丢失的记录不再展示；超过上限的旧记录淘汰
+  const limit = historyLimit()
   const valid = items.filter((item) => existsSync(join(dir, item.file)))
-  const kept = valid.slice(0, PIN_HISTORY_LIMIT)
-  const dropped = valid.slice(PIN_HISTORY_LIMIT)
+  const kept = valid.slice(0, limit)
+  const dropped = valid.slice(limit)
   loaded = kept
   await cleanupOrphans(kept)
   if (dropped.length > 0 || kept.length !== items.length) {
@@ -166,9 +175,22 @@ export function recordPinHistory(
     await writeFile(join(dir, thumb), makeThumbnail(buffer))
 
     items.unshift({ id, createdAt: Date.now(), width, height, file, thumb, source })
-    const dropped = items.splice(PIN_HISTORY_LIMIT)
+    const dropped = items.splice(historyLimit())
     await removeFiles(dropped.flatMap((item) => [item.file, item.thumb]))
     await saveIndex(items)
+    for (const listener of changeListeners) listener()
+  })
+}
+
+/** 切换保留档位：调用方先保存配置，这里按新上限裁剪已有记录并落盘 */
+export function setPinHistoryLimit(limit: HistoryLimit): Promise<void> {
+  return enqueue(async () => {
+    const items = await ensureLoaded()
+    const dropped = items.splice(limit)
+    if (dropped.length > 0) {
+      await removeFiles(dropped.flatMap((item) => [item.file, item.thumb]))
+      await saveIndex(items)
+    }
     for (const listener of changeListeners) listener()
   })
 }
@@ -268,36 +290,26 @@ export async function savePinHistoryItem(id: string): Promise<SetHotkeyResult> {
   }
 }
 
+export interface PinHistoryImage {
+  buffer: Buffer
+  width: number
+  height: number
+}
+
 /**
- * 历史重贴：读取原图，并把落点放在当前鼠标所在的显示器上（以光标为中心，夹在屏幕内）。
- * 不经过截图流程，所以没有选区，只有图片尺寸与光标位置。
+ * 历史重贴：只读取原图与像素尺寸，落点由调用方（贴图服务）按当前光标计算。
+ * 不经过截图流程，所以没有选区。
  */
-export function readPinHistoryInput(id: string): Promise<PinCaptureInput | null> {
+export function readHistoryImage(id: string): Promise<PinHistoryImage | null> {
   return enqueue(async () => {
     const items = await ensureLoaded()
     const item = items.find((entry) => entry.id === id)
     if (!item) return null
-    let buffer: Buffer
     try {
-      buffer = await readFile(join(pinHistoryDir(), item.file))
+      const buffer = await readFile(join(pinHistoryDir(), item.file))
+      return { buffer, width: item.width, height: item.height }
     } catch {
       return null
-    }
-
-    const point = screen.getCursorScreenPoint()
-    const display = screen.getDisplayNearestPoint(point)
-    const scaleFactor = display.scaleFactor > 0 ? display.scaleFactor : 1
-    const width = item.width / scaleFactor
-    const height = item.height / scaleFactor
-    const clamp = (value: number, max: number): number => Math.max(0, Math.min(value, max))
-    const selection = {
-      x: clamp(point.x - display.bounds.x - width / 2, display.bounds.width - width),
-      y: clamp(point.y - display.bounds.y - height / 2, display.bounds.height - height),
-    }
-    return {
-      buffer,
-      bounds: { ...selection, width, height },
-      display: { ...display.bounds, scaleFactor },
     }
   })
 }

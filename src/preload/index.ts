@@ -1,17 +1,33 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import {
   IPC,
+  type HistoryLimit,
   type HomeWindowAction,
   type IconTheme,
+  type OcrLanguagesResult,
+  type PinApi,
   type PinHistoryItem,
   type PinMeta,
   type SetHotkeyResult,
   type SnipApi,
   type SnipState,
+  type TranslateDirection,
   type TranslateResult,
   type TranslateStatus,
   type UpdateCheckResult,
 } from '@shared/ipc'
+
+const pinApi: PinApi = {
+  meta: () => ipcRenderer.invoke(IPC.pinMeta) as Promise<PinMeta | null>,
+  ready: () => ipcRenderer.send(IPC.pinReady),
+  close: () => ipcRenderer.send(IPC.pinClose),
+  dragStart: (x, y) => ipcRenderer.send(IPC.pinDragStart, x, y),
+  dragMove: (x, y) => ipcRenderer.send(IPC.pinDragMove, x, y),
+  dragEnd: () => ipcRenderer.send(IPC.pinDragEnd),
+  resizeStart: (direction, x, y) => ipcRenderer.send(IPC.pinResizeStart, direction, x, y),
+  resizeMove: (x, y) => ipcRenderer.send(IPC.pinResizeMove, x, y),
+  resizeEnd: () => ipcRenderer.send(IPC.pinResizeEnd),
+}
 
 const api: SnipApi = {
   getState: () => ipcRenderer.invoke(IPC.getState) as Promise<SnipState>,
@@ -25,11 +41,16 @@ const api: SnipApi = {
   pickCustomIcon: () => ipcRenderer.invoke(IPC.pickCustomIcon) as Promise<SetHotkeyResult>,
   checkUpdate: () => ipcRenderer.invoke(IPC.checkUpdate) as Promise<UpdateCheckResult>,
   translateStatus: () => ipcRenderer.invoke(IPC.translateStatus) as Promise<TranslateStatus>,
-  translateToChinese: (text: string) =>
-    ipcRenderer.invoke(IPC.translateToChinese, text) as Promise<TranslateResult>,
+  translate: (text: string, direction: TranslateDirection) =>
+    ipcRenderer.invoke(IPC.translate, text, direction) as Promise<TranslateResult>,
+  listOcrLanguages: () => ipcRenderer.invoke(IPC.listOcrLanguages) as Promise<OcrLanguagesResult>,
+  setOcrLanguage: (tag: string) =>
+    ipcRenderer.invoke(IPC.setOcrLanguage, tag) as Promise<SetHotkeyResult>,
   startCapture: () => ipcRenderer.send(IPC.homeStartCapture),
   pinLast: () => ipcRenderer.send(IPC.pinLast),
   closeAllPins: () => ipcRenderer.send(IPC.pinCloseAll),
+  setHistoryLimit: (limit: HistoryLimit) =>
+    ipcRenderer.invoke(IPC.setHistoryLimit, limit) as Promise<SetHotkeyResult>,
   listPinHistory: () => ipcRenderer.invoke(IPC.pinHistoryList) as Promise<PinHistoryItem[]>,
   deletePinHistory: (id: string) =>
     ipcRenderer.invoke(IPC.pinHistoryDelete, id) as Promise<PinHistoryItem[]>,
@@ -64,17 +85,12 @@ const api: SnipApi = {
       ipcRenderer.removeListener(IPC.pinHistoryChanged, handler)
     }
   },
-  pin: {
-    meta: () => ipcRenderer.invoke(IPC.pinMeta) as Promise<PinMeta | null>,
-    ready: () => ipcRenderer.send(IPC.pinReady),
-    close: () => ipcRenderer.send(IPC.pinClose),
-    dragStart: (x, y) => ipcRenderer.send(IPC.pinDragStart, x, y),
-    dragMove: (x, y) => ipcRenderer.send(IPC.pinDragMove, x, y),
-    dragEnd: () => ipcRenderer.send(IPC.pinDragEnd),
-    resizeStart: (direction, x, y) => ipcRenderer.send(IPC.pinResizeStart, direction, x, y),
-    resizeMove: (x, y) => ipcRenderer.send(IPC.pinResizeMove, x, y),
-    resizeEnd: () => ipcRenderer.send(IPC.pinResizeEnd),
-  },
+  pin: pinApi,
 }
 
-contextBridge.exposeInMainWorld('snip', api)
+/** 贴图页只暴露贴图窗 API，主窗只暴露完整 snip API */
+const currentPathname = (globalThis as { location?: { pathname?: string } }).location?.pathname ?? ''
+const isPinPage = currentPathname.endsWith('pin.html')
+
+if (isPinPage) contextBridge.exposeInMainWorld('snipPin', pinApi)
+else contextBridge.exposeInMainWorld('snip', api)

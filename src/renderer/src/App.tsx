@@ -4,8 +4,11 @@ import { prettyAccelerator } from './accelerator'
 import {
   DEFAULT_HOTKEY,
   DEFAULT_PIN_HOTKEY,
+  HISTORY_LIMITS,
+  type HistoryLimit,
   type HistorySource,
   type IconTheme,
+  type OcrLanguageInfo,
   type PinHistoryItem,
   type SetHotkeyResult,
   type SnipState,
@@ -207,8 +210,6 @@ const ICON_CARDS: { theme: IconTheme; label: string }[] = [
 const CUSTOM_UPLOAD_ICON =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>'
 
-const PIN_HISTORY_LIMIT = 50
-
 function formatHistoryTime(value: number): string {
   const date = new Date(value)
   const pad = (n: number): string => String(n).padStart(2, '0')
@@ -226,6 +227,8 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
   const [updateStatus, setUpdateStatus] = useState('当前已是最新版本')
+  const [ocrLanguages, setOcrLanguages] = useState<OcrLanguageInfo[]>([])
+  const [ocrLanguagesError, setOcrLanguagesError] = useState<string | null>(null)
   const toastTimer = useRef<number | null>(null)
 
   const showToast = useCallback((text: string) => {
@@ -280,6 +283,20 @@ export default function App() {
     loadHistory()
   }, [historyOpen, historyVersion, loadHistory])
 
+  // 打开设置时读取系统已装 OCR 语言；枚举失败如实显示原因
+  useEffect(() => {
+    if (tab !== 'general') return
+    let alive = true
+    void window.snip.listOcrLanguages().then((result) => {
+      if (!alive) return
+      setOcrLanguages(result.languages)
+      setOcrLanguagesError(result.error ?? null)
+    })
+    return () => {
+      alive = false
+    }
+  }, [tab])
+
   const platform = state?.platform ?? 'win32'
   const hotkey = state?.hotkey ?? DEFAULT_HOTKEY
   const pinHotkey = state?.pinHotkey ?? DEFAULT_PIN_HOTKEY
@@ -303,6 +320,22 @@ export default function App() {
     const result = await window.snip.setIconTheme(theme)
     if (result.ok) showToast('已保存')
     else showToast(result.error ?? '切换图标失败')
+  }
+
+  const applyHistoryLimit = async (limit: HistoryLimit): Promise<void> => {
+    const result = await window.snip.setHistoryLimit(limit)
+    if (result.ok) {
+      showToast(`已切换为 ${limit} 条`)
+      loadHistory()
+    } else {
+      showToast(result.error ?? '切换失败')
+    }
+  }
+
+  const applyOcrLanguage = async (tag: string): Promise<void> => {
+    const result = await window.snip.setOcrLanguage(tag)
+    if (result.ok) showToast(tag ? '已切换 OCR 识别语言' : '已恢复系统默认')
+    else showToast(result.error ?? '切换 OCR 语言失败')
   }
 
   const removeHistoryItem = async (id: string): Promise<void> => {
@@ -446,12 +479,26 @@ export default function App() {
               </button>
               <h2>截图历史</h2>
               <span className="settings-version">
-                {history?.length ?? 0} 条 · 上限 {PIN_HISTORY_LIMIT} 条
+                {history?.length ?? 0} 条 · 上限 {state?.historyLimit ?? 10} 条
               </span>
             </header>
             <div className="panes">
               <div className="history-bar">
                 <span className="history-note">按创建时间倒序；点击缩略图重新贴出，复制/另存不新增记录</span>
+                <label className="history-limit">
+                  保留
+                  <select
+                    value={state?.historyLimit ?? 10}
+                    onChange={(event) => void applyHistoryLimit(Number(event.target.value) as HistoryLimit)}
+                  >
+                    {HISTORY_LIMITS.map((limit) => (
+                      <option key={limit} value={limit}>
+                        {limit}
+                      </option>
+                    ))}
+                  </select>
+                  条
+                </label>
                 <button
                   type="button"
                   className="ghost-btn danger"
@@ -581,6 +628,32 @@ export default function App() {
 
                 {tab === 'general' ? (
                   <div className="pane active">
+                    <div className="setting-row">
+                      <div className="s-info">
+                        <div className="s-title">OCR 识别语言</div>
+                        <div className="s-desc">
+                          {ocrLanguagesError
+                            ? `无法读取系统语言包：${ocrLanguagesError}`
+                            : ocrLanguages.length === 0
+                              ? '系统未安装可用的 OCR 语言包'
+                              : '从系统已安装的 OCR 语言中选择；未选择时按系统默认（中文优先）'}
+                        </div>
+                      </div>
+                      <select
+                        className="setting-select"
+                        aria-label="OCR 识别语言"
+                        value={state?.ocrLanguage ?? ''}
+                        disabled={ocrLanguages.length === 0}
+                        onChange={(event) => void applyOcrLanguage(event.target.value)}
+                      >
+                        <option value="">系统默认（中文优先）</option>
+                        {ocrLanguages.map((language) => (
+                          <option key={language.tag} value={language.tag}>
+                            {language.displayName}（{language.tag}）
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                     <div className="setting-row">
                       <div className="s-info">
                         <div className="s-title">开机自启动</div>

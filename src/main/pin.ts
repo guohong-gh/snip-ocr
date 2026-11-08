@@ -1,10 +1,15 @@
-import { BrowserWindow, app, nativeImage, net, protocol } from 'electron'
+import { BrowserWindow, app, nativeImage, net, protocol, screen } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { PIN_RESIZE_DIRECTIONS, type PinMeta, type PinResizeDirection } from '@shared/ipc'
-import { recordPinHistory } from './pinHistory'
+import {
+  PIN_RESIZE_DIRECTIONS,
+  type PinMeta,
+  type PinResizeDirection,
+  type SetHotkeyResult,
+} from '@shared/ipc'
+import { recordPinHistory, type PinHistoryImage } from './pinHistory'
 
 const PIN_TITLE = 'snip-pin'
 /** 贴图图片走自定义协议，避免 dev 模式下 http 页面无法加载 file:// 本地资源 */
@@ -120,6 +125,35 @@ export function computePinPlacement(input: PinPlacementInput): PinPlacement {
     height: Math.max(1, Math.round(input.imageHeight / scaleFactor)),
     scaleFactor,
   }
+}
+
+export interface PinHistoryPlacementInput {
+  imageWidth: number
+  imageHeight: number
+  cursor: { x: number; y: number }
+  display: { x: number; y: number; width: number; height: number; scaleFactor: number }
+}
+
+/**
+ * 历史重贴落点：以当前光标为图片中心，并夹在光标所在显示器内。
+ * 尺寸按 scaleFactor 换算成 DIP，与普通截图贴图一致。
+ */
+export function computeHistoryPinPlacement(input: PinHistoryPlacementInput): PinPlacement {
+  const raw = input.display.scaleFactor
+  const scaleFactor = Number.isFinite(raw) && raw > 0 ? raw : 1
+  const width = input.imageWidth / scaleFactor
+  const height = input.imageHeight / scaleFactor
+  const clamp = (value: number, max: number): number => Math.max(0, Math.min(value, max))
+  const selection = {
+    x: clamp(input.cursor.x - input.display.x - width / 2, input.display.width - width),
+    y: clamp(input.cursor.y - input.display.y - height / 2, input.display.height - height),
+  }
+  return computePinPlacement({
+    imageWidth: input.imageWidth,
+    imageHeight: input.imageHeight,
+    selection,
+    display: input.display,
+  })
 }
 
 export function pinTempDir(): string {
@@ -244,6 +278,33 @@ class PinService {
     } catch (error) {
       console.error('[snip] pin temp init failed:', error)
     }
+  }
+
+  /** 历史重贴：落点以当前光标为图片中心，并夹在光标所在显示器内 */
+  async pinFromHistory(image: PinHistoryImage): Promise<SetHotkeyResult> {
+    const point = screen.getCursorScreenPoint()
+    const display = screen.getDisplayNearestPoint(point)
+    const displayBounds = { ...display.bounds, scaleFactor: display.scaleFactor }
+    const placement = computeHistoryPinPlacement({
+      imageWidth: image.width,
+      imageHeight: image.height,
+      cursor: point,
+      display: displayBounds,
+    })
+    await this.createPin(
+      {
+        buffer: image.buffer,
+        bounds: {
+          x: placement.x - display.bounds.x,
+          y: placement.y - display.bounds.y,
+          width: placement.width,
+          height: placement.height,
+        },
+        display: displayBounds,
+      },
+      { recordHistory: false },
+    )
+    return { ok: true }
   }
 
   async createPin(input: PinCaptureInput, options?: CreatePinOptions): Promise<PinMeta> {

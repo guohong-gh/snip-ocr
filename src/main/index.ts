@@ -5,7 +5,6 @@ import {
   app,
   dialog,
   globalShortcut,
-  ipcMain,
   nativeImage,
   screen,
 } from 'electron'
@@ -13,14 +12,12 @@ import { statSync } from 'node:fs'
 import {
   DEFAULT_HOTKEY,
   DEFAULT_PIN_HOTKEY,
-  ICON_THEMES,
   IPC,
-  type HomeWindowAction,
   type IconTheme,
   type SetHotkeyResult,
-  type SnipState,
   type UpdateCheckResult,
 } from '@shared/ipc'
+import { appState, broadcastState } from './appState'
 import {
   configureDataDirectory,
   loadConfig,
@@ -33,29 +30,23 @@ import {
   disposeHome,
   getHomeWindow,
   hideMainWindow,
-  homeWindowAction,
   isHomeVisible,
-  markHomeReady,
   openMainWindow,
   requestOpenSettings,
   setHomeHiddenHandler,
   setQuitting,
 } from './homeWindow'
 import { pinService, registerPinScheme } from './pin'
+import { registerIpc } from './ipc/registry'
 import {
-  clearPinHistory,
-  copyPinHistoryItem,
-  deletePinHistory,
   hasPinHistory,
   listPinHistory,
   onPinHistoryChange,
-  readPinHistoryInput,
-  savePinHistoryItem,
+  readHistoryImage,
 } from './pinHistory'
 import { screenshotService, trayIconPath, type CaptureOutcome } from './screenshot'
 import { runSelftest } from './selftest'
-import { translateStatus, translateToChinese } from './translate'
-import { OVERLAY_TRANSLATE_PREFIX, OVERLAY_TRANSLATE_STATUS_PREFIX } from './overlayUi'
+import { registerOverlayTranslateBridge } from './overlayBridge'
 
 const APP_ID = 'local.snip.ocr'
 const SELFTEST = process.argv.includes('--selftest')
@@ -64,38 +55,6 @@ const START_SETTINGS = process.argv.includes('--settings')
 
 let tray: Tray | null = null
 let trayHintShown = false
-let hotkey = DEFAULT_HOTKEY
-let hotkeyError: string | null = null
-let pinHotkey = DEFAULT_PIN_HOTKEY
-let pinHotkeyError: string | null = null
-let iconTheme: IconTheme = 'default'
-let customIconUrl: string | null = null
-let autostart = false
-/** 截图历史是否至少有一条（贴图快捷键与首页按钮的可用态都跟着它走） */
-let hasHistory = false
-
-function buildState(): SnipState {
-  return {
-    hotkey,
-    hotkeyError,
-    pinHotkey,
-    pinHotkeyError,
-    iconTheme,
-    customIconUrl,
-    autostart,
-    autostartSupported: app.isPackaged,
-    pinCount: pinService.count,
-    hasHistory,
-    version: app.getVersion(),
-    platform: process.platform,
-    displayCount: screen.getAllDisplays().length,
-  }
-}
-
-function broadcastState(): void {
-  const win = getHomeWindow()
-  if (win) win.webContents.send(IPC.stateChanged, buildState())
-}
 
 function notify(title: string, body: string): void {
   if (SELFTEST) {
@@ -112,7 +71,7 @@ function showTrayHintOnce(): void {
   trayHintShown = true
   saveConfig({ trayHintShown: true })
   const title = '已收起到托盘'
-  const body = `按 ${hotkey} 随时截图；完全退出请用托盘菜单。`
+  const body = `按 ${appState.hotkey} 随时截图；完全退出请用托盘菜单。`
   if (SELFTEST) {
     console.log(`[notify] ${title} ${body}`)
     return
@@ -136,7 +95,7 @@ function describe(outcome: CaptureOutcome): { title: string; body: string } | nu
 
 function trayMenu(): Menu {
   return Menu.buildFromTemplate([
-    { label: `截图  (${hotkey})`, click: () => void startCapture() },
+    { label: `截图  (${appState.hotkey})`, click: () => void startCapture() },
     { label: '打开主界面', click: () => openMainWindow() },
     { label: '设置快捷键…', click: () => requestOpenSettings() },
     { type: 'separator' },
@@ -153,19 +112,19 @@ function trayMenu(): Menu {
 function refreshTray(): void {
   if (!tray) return
   tray.setContextMenu(trayMenu())
-  const error = hotkeyError ?? pinHotkeyError
+  const error = appState.hotkeyError ?? appState.pinHotkeyError
   tray.setToolTip(
     error
       ? `snip-ocr · ${error}\n退出请使用托盘右键菜单`
-      : `snip-ocr · ${hotkey} 截图\n退出请使用托盘右键菜单`,
+      : `snip-ocr · ${appState.hotkey} 截图\n退出请使用托盘右键菜单`,
   )
 }
 
 /** 重新读取历史是否有条目，并广播给主窗（只在启动与删除/清空时调用，避免截图过程中额外重绘） */
 function refreshHistoryState(): void {
   void hasPinHistory().then((value) => {
-    if (hasHistory === value) return
-    hasHistory = value
+    if (appState.hasHistory === value) return
+    appState.hasHistory = value
     broadcastState()
   })
 }
@@ -180,9 +139,9 @@ async function startCapture(): Promise<void> {
 
 function applyHotkey(next: string): SetHotkeyResult {
   const result = screenshotService.setHotkey(next)
-  hotkey = screenshotService.currentHotkey ?? DEFAULT_HOTKEY
-  hotkeyError = result.error ?? null
-  if (result.ok) saveConfig({ hotkey })
+  appState.hotkey = screenshotService.currentHotkey ?? DEFAULT_HOTKEY
+  appState.hotkeyError = result.error ?? null
+  if (result.ok) saveConfig({ hotkey: appState.hotkey })
   refreshTray()
   broadcastState()
   return result
@@ -199,13 +158,13 @@ async function pinLastCapture(): Promise<void> {
     notify('贴图失败', '还没有截图记录，先按截图快捷键截一张')
     return
   }
-  const input = await readPinHistoryInput(latest.id)
+  const input = await readHistoryImage(latest.id)
   if (!input) {
     notify('贴图失败', '最近一张截图已不存在')
     return
   }
   try {
-    await pinService.createPin(input, { recordHistory: false })
+    await pinService.pinFromHistory(input)
     const size = nativeImage.createFromBuffer(input.buffer).getSize()
     notify('已贴图', `${size.width} × ${size.height} px`)
   } catch (error) {
@@ -215,7 +174,7 @@ async function pinLastCapture(): Promise<void> {
 
 function applyPinHotkey(next: string): SetHotkeyResult {
   const target = next.trim() || DEFAULT_PIN_HOTKEY
-  if (pinHotkey === target && globalShortcut.isRegistered(target)) return { ok: true }
+  if (appState.pinHotkey === target && globalShortcut.isRegistered(target)) return { ok: true }
   const handler = (): void => void pinLastCapture()
   let ok = false
   try {
@@ -225,21 +184,23 @@ function applyPinHotkey(next: string): SetHotkeyResult {
   }
   if (!ok) {
     // 失败时不抢占旧键；旧键若已被注销（启动场景），只在它不同于目标键时补注册一次
-    if (pinHotkey !== target && !globalShortcut.isRegistered(pinHotkey)) {
+    if (appState.pinHotkey !== target && !globalShortcut.isRegistered(appState.pinHotkey)) {
       try {
-        globalShortcut.register(pinHotkey, handler)
+        globalShortcut.register(appState.pinHotkey, handler)
       } catch {
         // 旧键也注册不上时保持未注册，错误提示会如实说明
       }
     }
-    pinHotkeyError = `快捷键 ${target} 注册失败，可能已被其它应用占用`
+    appState.pinHotkeyError = `快捷键 ${target} 注册失败，可能已被其它应用占用`
     refreshTray()
     broadcastState()
-    return { ok: false, error: pinHotkeyError }
+    return { ok: false, error: appState.pinHotkeyError }
   }
-  if (pinHotkey !== target && globalShortcut.isRegistered(pinHotkey)) globalShortcut.unregister(pinHotkey)
-  pinHotkey = target
-  pinHotkeyError = null
+  if (appState.pinHotkey !== target && globalShortcut.isRegistered(appState.pinHotkey)) {
+    globalShortcut.unregister(appState.pinHotkey)
+  }
+  appState.pinHotkey = target
+  appState.pinHotkeyError = null
   saveConfig({ pinHotkey: target })
   refreshTray()
   broadcastState()
@@ -247,10 +208,10 @@ function applyPinHotkey(next: string): SetHotkeyResult {
 }
 
 async function applyIconTheme(theme: IconTheme): Promise<SetHotkeyResult> {
-  if (theme === 'custom' && !customIconUrl) return { ok: false, error: '请先选择自定义图标' }
-  iconTheme = theme
+  if (theme === 'custom' && !appState.customIconUrl) return { ok: false, error: '请先选择自定义图标' }
+  appState.iconTheme = theme
   saveConfig({ iconTheme: theme })
-  await screenshotService.setToolbarTheme(theme, customIconUrl)
+  await screenshotService.setToolbarTheme(theme, appState.customIconUrl)
   broadcastState()
   return { ok: true }
 }
@@ -279,7 +240,7 @@ async function pickCustomIcon(): Promise<SetHotkeyResult> {
         : image
     const png = normalized.toPNG()
     saveCustomIcon(png)
-    customIconUrl = `data:image/png;base64,${png.toString('base64')}`
+    appState.customIconUrl = `data:image/png;base64,${png.toString('base64')}`
     return applyIconTheme('custom')
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
@@ -299,7 +260,7 @@ function setAutostart(enabled: boolean): SetHotkeyResult {
   if (!app.isPackaged) return { ok: false, error: '仅安装版支持开机自启' }
   try {
     app.setLoginItemSettings({ openAtLogin: enabled, path: process.execPath, args: ['--hidden'] })
-    autostart = readAutostart()
+    appState.autostart = readAutostart()
     broadcastState()
     return { ok: true }
   } catch (error) {
@@ -311,28 +272,6 @@ function checkUpdate(): Promise<UpdateCheckResult> {
   // 离线应用：不做网络请求，也不伪造版本
   return new Promise((resolve) => {
     setTimeout(() => resolve({ status: 'latest', version: app.getVersion() }), 1200)
-  })
-}
-
-/** 遮罩侧栏无法直接调 IPC，只能通过 console 前缀回传；这里统一桥接并回送结果 */
-function registerOverlayTranslateBridge(): void {
-  app.on('web-contents-created', (_event, contents) => {
-    contents.on('console-message', (_event, _level, message) => {
-      if (message === OVERLAY_TRANSLATE_STATUS_PREFIX) {
-        contents.send('SCREENSHOTS:translate-status', translateStatus())
-        return
-      }
-      if (!message.startsWith(OVERLAY_TRANSLATE_PREFIX)) return
-      let text = ''
-      try {
-        text = Buffer.from(message.slice(OVERLAY_TRANSLATE_PREFIX.length), 'base64').toString('utf8')
-      } catch {
-        return
-      }
-      void translateToChinese(text).then((result) => {
-        if (!contents.isDestroyed()) contents.send('SCREENSHOTS:translate-result', result)
-      })
-    })
   })
 }
 
@@ -352,16 +291,18 @@ function boot(): void {
 
   migrateLegacyData()
   const config = loadConfig()
-  hotkey = config.hotkey
-  const applied = screenshotService.setHotkey(hotkey)
-  hotkey = screenshotService.currentHotkey ?? DEFAULT_HOTKEY
-  hotkeyError = applied.error ?? null
+  appState.hotkey = config.hotkey
+  const applied = screenshotService.setHotkey(appState.hotkey)
+  appState.hotkey = screenshotService.currentHotkey ?? DEFAULT_HOTKEY
+  appState.hotkeyError = applied.error ?? null
   if (!applied.ok) notify('快捷键不可用', `${applied.error}，可在设置里更换`)
 
-  iconTheme = config.iconTheme
-  customIconUrl = readCustomIconDataUrl()
-  void screenshotService.setToolbarTheme(iconTheme, customIconUrl)
-  autostart = readAutostart()
+  appState.iconTheme = config.iconTheme
+  appState.historyLimit = config.historyLimit
+  appState.ocrLanguage = config.ocrLanguage
+  appState.customIconUrl = readCustomIconDataUrl()
+  void screenshotService.setToolbarTheme(appState.iconTheme, appState.customIconUrl)
+  appState.autostart = readAutostart()
   const pinApplied = applyPinHotkey(config.pinHotkey)
   if (!pinApplied.ok) notify('贴图快捷键不可用', `${pinApplied.error}，可在设置里更换`)
   refreshHistoryState()
@@ -382,7 +323,7 @@ function boot(): void {
   })
   screenshotService.onOutcome((outcome) => {
     // 成功出口（复制/另存/贴图/长图）都会写一条历史，这里同步可用态
-    if (outcome.kind !== 'cancelled') hasHistory = true
+    if (outcome.kind !== 'cancelled') appState.hasHistory = true
     const message = describe(outcome)
     if (message) notify(message.title, message.body)
     broadcastState()
@@ -400,99 +341,20 @@ function boot(): void {
     openMainWindow()
   })
 
-  ipcMain.handle(IPC.getState, () => buildState())
-  ipcMain.handle(IPC.setHotkey, (_event, accelerator: unknown) => {
-    if (typeof accelerator !== 'string' || !accelerator.trim()) {
-      return { ok: false, error: '快捷键不能为空' } satisfies SetHotkeyResult
-    }
-    return applyHotkey(accelerator)
-  })
-  ipcMain.handle(IPC.setPinHotkey, (_event, accelerator: unknown) => {
-    if (typeof accelerator !== 'string' || !accelerator.trim()) {
-      return { ok: false, error: '快捷键不能为空' } satisfies SetHotkeyResult
-    }
-    return applyPinHotkey(accelerator)
-  })
-  ipcMain.handle(IPC.setAutostart, (_event, enabled: unknown) => {
-    if (typeof enabled !== 'boolean') return { ok: false, error: '参数无效' } satisfies SetHotkeyResult
-    return setAutostart(enabled)
-  })
-  ipcMain.handle(IPC.setIconTheme, async (_event, theme: unknown) => {
-    if (typeof theme !== 'string' || !(ICON_THEMES as readonly string[]).includes(theme)) {
-      return { ok: false, error: '无效的图标主题' } satisfies SetHotkeyResult
-    }
-    return applyIconTheme(theme as IconTheme)
-  })
-  ipcMain.handle(IPC.pickCustomIcon, () => pickCustomIcon())
-  ipcMain.handle(IPC.checkUpdate, () => checkUpdate())
-  ipcMain.handle(IPC.translateStatus, () => translateStatus())
-  ipcMain.handle(IPC.translateToChinese, (_event, text: unknown) => {
-    if (typeof text !== 'string') return { ok: false, reason: '参数无效' }
-    return translateToChinese(text)
+  registerIpc({
+    settings: {
+      applyHotkey,
+      applyPinHotkey,
+      setAutostart,
+      applyIconTheme,
+      pickCustomIcon,
+      checkUpdate,
+    },
+    history: { refreshState: refreshHistoryState },
+    appWindow: { startCapture, pinLast: pinLastCapture },
   })
 
-  ipcMain.handle(IPC.pinHistoryList, () => listPinHistory())
-  ipcMain.handle(IPC.pinHistoryDelete, async (_event, id: unknown) => {
-    if (typeof id === 'string' && id) await deletePinHistory(id)
-    refreshHistoryState()
-    return listPinHistory()
-  })
-  ipcMain.handle(IPC.pinHistoryClear, async () => {
-    await clearPinHistory()
-    refreshHistoryState()
-    return listPinHistory()
-  })
-  ipcMain.handle(IPC.pinHistoryCopy, async (_event, id: unknown) => {
-    if (typeof id !== 'string' || !id) return { ok: false, error: '参数无效' } satisfies SetHotkeyResult
-    return (await copyPinHistoryItem(id)) satisfies SetHotkeyResult
-  })
-  ipcMain.handle(IPC.pinHistorySave, async (_event, id: unknown) => {
-    if (typeof id !== 'string' || !id) return { ok: false, error: '参数无效' } satisfies SetHotkeyResult
-    return (await savePinHistoryItem(id)) satisfies SetHotkeyResult
-  })
-  ipcMain.handle(IPC.pinHistoryPin, async (_event, id: unknown) => {
-    if (typeof id !== 'string' || !id) return { ok: false, error: '参数无效' } satisfies SetHotkeyResult
-    const input = await readPinHistoryInput(id)
-    if (!input) return { ok: false, error: '该截图历史已不存在' } satisfies SetHotkeyResult
-    try {
-      await pinService.createPin(input, { recordHistory: false })
-      return { ok: true } satisfies SetHotkeyResult
-    } catch (error) {
-      return {
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-      } satisfies SetHotkeyResult
-    }
-  })
-
-  ipcMain.on(IPC.homeStartCapture, () => void startCapture())
-  ipcMain.on(IPC.pinLast, () => void pinLastCapture())
-  ipcMain.on(IPC.pinCloseAll, () => pinService.closeAll())
-  ipcMain.on(IPC.homeWindowAction, (_event, action: unknown) => {
-    if (action === 'close' || action === 'minimize') homeWindowAction(action as HomeWindowAction)
-  })
-  ipcMain.on(IPC.quitApp, () => app.quit())
-  ipcMain.on(IPC.homeReady, () => markHomeReady())
-
-  ipcMain.handle(IPC.pinMeta, (event) => pinService.metaFor(event.sender.id))
-  ipcMain.on(IPC.pinReady, (event) => pinService.markReady(event.sender.id))
-  ipcMain.on(IPC.pinClose, (event) => pinService.closeFor(event.sender.id))
-  ipcMain.on(IPC.pinDragStart, (event, x: unknown, y: unknown) => {
-    pinService.dragStart(event.sender.id, x, y)
-  })
-  ipcMain.on(IPC.pinDragMove, (event, x: unknown, y: unknown) => {
-    pinService.dragMove(event.sender.id, x, y)
-  })
-  ipcMain.on(IPC.pinDragEnd, (event) => pinService.dragEnd(event.sender.id))
-  ipcMain.on(IPC.pinResizeStart, (event, direction: unknown, x: unknown, y: unknown) => {
-    pinService.resizeStart(event.sender.id, direction, x, y)
-  })
-  ipcMain.on(IPC.pinResizeMove, (event, x: unknown, y: unknown) => {
-    pinService.resizeMove(event.sender.id, x, y)
-  })
-  ipcMain.on(IPC.pinResizeEnd, (event) => pinService.resizeEnd(event.sender.id))
-
-  console.log(`[snip] ready · hotkey=${hotkey} · pinHotkey=${pinHotkey} · displays=${screen.getAllDisplays().length}`)
+  console.log(`[snip] ready · hotkey=${appState.hotkey} · pinHotkey=${appState.pinHotkey} · displays=${screen.getAllDisplays().length}`)
   if (SELFTEST) {
     void runSelftest()
     return

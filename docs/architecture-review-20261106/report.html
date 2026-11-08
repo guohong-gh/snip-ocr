@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>snip-ocr 架构扫描 · 20261106</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose", flowchart: { curve: "linear" } });
+</script>
+<style>
+  .seam { stroke-dasharray: 4 4; }
+  .leak { stroke: #dc2626; stroke-width: 2px; }
+  .deep { background: linear-gradient(135deg, #0f172a, #1e293b); }
+  .mermaid svg { max-width: 100%; }
+  .fallback-note { font-size: 12px; }
+</style>
+</head>
+<body class="bg-stone-50 text-slate-900 font-sans antialiased">
+<main class="max-w-5xl mx-auto px-6 py-12 space-y-12">
+
+  <header class="space-y-4">
+    <div class="flex items-baseline justify-between gap-6 flex-wrap">
+      <h1 class="text-3xl font-serif font-semibold tracking-tight">snip-ocr 架构扫描</h1>
+      <span class="text-sm text-slate-500 font-mono">2026-11-06 · src/ 全量</span>
+    </div>
+    <p class="text-sm text-slate-600 max-w-3xl">
+      目标：找出「深模块」机会 —— 小 interface 背后压住大量实现，把变动与验证收进一处。以下每条都落到文件与行号，词汇严格使用
+      <span class="font-mono">module / interface / implementation / depth / seam / adapter / leverage / locality</span>。
+    </p>
+    <div class="flex flex-wrap gap-3 text-xs uppercase tracking-wider text-slate-500">
+      <span class="inline-flex items-center gap-2"><span class="w-3 h-3 border border-slate-400 bg-white"></span>module</span>
+      <span class="inline-flex items-center gap-2"><span class="w-3 h-3 border border-dashed border-slate-400 bg-white"></span>seam</span>
+      <span class="inline-flex items-center gap-2"><span class="w-3 h-3 bg-red-600"></span>leak</span>
+      <span class="inline-flex items-center gap-2"><span class="w-3 h-3 deep"></span>deep module</span>
+    </div>
+    <div class="rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 fallback-note">
+      本报告按技能模板使用 Tailwind 与 Mermaid CDN；首次打开需联网。离线时布局会降级，但文字与结论仍可读。
+    </div>
+  </header>
+
+  <section id="method" class="space-y-4">
+    <h2 class="text-xl font-serif font-semibold">扫描方式与证据边界</h2>
+    <ul class="text-sm text-slate-700 space-y-2 list-disc pl-5">
+      <li>技能：<span class="font-mono">improve-codebase-architecture</span>（已读 SKILL.md 与 HTML-REPORT.md），并调用 <span class="font-mono">codebase-design</span> 取得词汇与原则。</li>
+      <li>领域模型：根目录有 <span class="font-mono">GLOSSARY.md</span>；<span class="font-mono">docs/adr/</span> 不存在，因此无 ADR 需要避开或重开。</li>
+      <li>git 核实：<span class="font-mono">git rev-parse --show-toplevel</span> 返回 <span class="font-mono">F:/vibeCoding/snip-ocr</span>，是仓库根本身，不是父级仓库；共 8 次提交。近 8 次提交热点：<span class="font-mono">selftest.ts</span>(7)、<span class="font-mono">index.ts</span>(5)、<span class="font-mono">ipc.ts</span>(4)、<span class="font-mono">App.tsx</span>(4)、<span class="font-mono">overlayUi.ts</span>(3)，与任务点名区域一致。</li>
+      <li>已逐文件阅读：<span class="font-mono">shared/ipc.ts</span>、<span class="font-mono">shared/icons.ts</span>、<span class="font-mono">preload/index.ts</span>、<span class="font-mono">main/index.ts</span>、<span class="font-mono">config.ts</span>、<span class="font-mono">homeWindow.ts</span>、<span class="font-mono">screenshot.ts</span>、<span class="font-mono">overlayUi.ts</span>、<span class="font-mono">ocr.ts</span>、<span class="font-mono">pin.ts</span>、<span class="font-mono">pinHistory.ts</span>、<span class="font-mono">stitch.ts</span>、<span class="font-mono">translate.ts</span>、<span class="font-mono">App.tsx</span>、<span class="font-mono">HotkeyRecorder.tsx</span>、<span class="font-mono">accelerator.ts</span>。</li>
+      <li><strong>未逐行读</strong> <span class="font-mono">selftest.ts</span>；关于它的结论只来自调用点与 git 热度，标为推测。</li>
+      <li>技能第 3 步「grilling loop」未执行：按技能要求需由用户先选定一个候选，本次只做扫描。</li>
+    </ul>
+  </section>
+
+  <section id="candidates" class="space-y-12">
+
+    <!-- C1 -->
+    <article id="c1" class="rounded-lg border border-slate-200 bg-white p-6 space-y-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap">
+        <h3 class="text-xl font-serif font-semibold">1. 把 SnipApi 从一张大表拆成按能力的小 interface</h3>
+        <div class="flex gap-2 flex-wrap">
+          <span class="px-2 py-1 rounded text-xs bg-amber-100 text-amber-800 font-medium">Worth exploring</span>
+          <span class="px-2 py-1 rounded text-xs bg-slate-100 text-slate-600 font-mono">in-process</span>
+        </div>
+      </div>
+      <div class="text-sm text-slate-600 font-mono leading-6">
+        src/shared/ipc.ts:1-38（36 个通道）· :154-164（PinApi 9 个方法）· :168-197（SnipApi 28 个成员）<br/>
+        src/preload/index.ts:19-86 · src/main/index.ts:426-570（33 处 ipcMain.handle/on）· src/renderer/src/App.tsx:306-366
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="rounded border border-slate-200 p-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before · 一张表</div>
+          <div class="space-y-2">
+            <div class="border border-slate-300 bg-slate-50 h-28 flex items-center justify-center text-xs text-slate-600">SnipApi · 28 个成员</div>
+            <div class="border border-slate-200 bg-white h-24 flex items-center justify-center text-xs text-slate-500">renderer 全部调用点</div>
+          </div>
+        </div>
+        <div class="rounded border border-slate-200 p-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-3">After · 按能力分组</div>
+          <div class="grid grid-cols-3 gap-2">
+            <div class="border-2 border-slate-900 h-12 flex items-center justify-center text-[10px]">settings</div>
+            <div class="border-2 border-slate-900 h-12 flex items-center justify-center text-[10px]">history</div>
+            <div class="border-2 border-slate-900 h-12 flex items-center justify-center text-[10px]">pin</div>
+            <div class="border-2 border-slate-900 h-12 flex items-center justify-center text-[10px]">capture</div>
+            <div class="border-2 border-slate-900 h-12 flex items-center justify-center text-[10px]">ocr</div>
+            <div class="border-2 border-slate-900 h-12 flex items-center justify-center text-[10px]">window</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-6 text-sm">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Problem</div>
+          <p>设置、历史、贴图、OCR、翻译、窗口生命周期共用同一个 interface，调用方要学完整张表才能用其中一小块。</p>
+        </div>
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Solution</div>
+          <p>按能力拆 interface 与注册函数，preload 分组成对象；IPC 常量与领域类型分文件，通道名不再和领域类型混住。</p>
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs uppercase tracking-wider text-slate-500 mb-2">Wins</div>
+        <ul class="text-sm text-slate-700 grid md:grid-cols-2 gap-1 list-disc pl-5">
+          <li>interface 缩小；每组的 invariants 只在该组声明</li>
+          <li>新增设置只扩一组，不动其它组</li>
+          <li>测试可按组跨 seam</li>
+          <li>类型与常量分家，减少全量共享的 kernel</li>
+        </ul>
+      </div>
+      <p class="text-xs text-slate-500">证据强度：文件与计数均可直接核对；是否现在拆属于取舍，不是故障。</p>
+    </article>
+
+    <!-- C2 -->
+    <article id="c2" class="rounded-lg border-2 border-slate-900 bg-white p-6 space-y-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap">
+        <h3 class="text-xl font-serif font-semibold">2. 遮罩桥接没有 interface：console 前缀 + window.__ 全局函数</h3>
+        <div class="flex gap-2 flex-wrap">
+          <span class="px-2 py-1 rounded text-xs bg-emerald-100 text-emerald-800 font-medium">Strong</span>
+          <span class="px-2 py-1 rounded text-xs bg-slate-100 text-slate-600 font-mono">in-process</span>
+        </div>
+      </div>
+      <div class="text-sm text-slate-600 font-mono leading-6">
+        src/main/overlayUi.ts:5-11（5 个前缀）· :541-1539（约 1000 行注入脚本字符串）· :1263-1451（window.__snipLongFrame / Append / Start / State / End / CropSelection）<br/>
+        src/main/screenshot.ts:269-272（console-message 监听）· :313-363（前缀解析与 action switch）· :895-938（overlayUi 内发送端 onTool）<br/>
+        src/main/index.ts:330-358（翻译另起一条 console-message 监听）
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="rounded border border-slate-200 p-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-2">Before · 两套发送端 / 两套接收端</div>
+          <pre class="mermaid">
+flowchart LR
+  A[overlayUi 脚本 onTool] -->|console.log 字符串| B[screenshot handleOverlayMessage]
+  A -->|console.log 字符串| C[index 翻译监听]
+  B -->|executeJavaScript| D[window.__snipLongFrame]
+  B -->|executeJavaScript| E[window.__snipCropSelection]
+  C -->|SCREENSHOTS:send| F[遮罩页 window.screenshots]
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class A,B,C leak
+          </pre>
+        </div>
+        <div class="rounded border border-slate-200 p-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-2">After · 一个桥接 module</div>
+          <pre class="mermaid">
+flowchart LR
+  A[overlayUi DOM/CSS] --> B[overlayBridge]
+  B --> C[screenshot]
+  B --> D[index 翻译]
+  B --> E[window.__ 全局函数 内部化]
+  classDef deep fill:#0f172a,color:#fff,stroke:#0f172a;
+  class B deep
+          </pre>
+        </div>
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-6 text-sm">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Problem</div>
+          <p>主进程与遮罩页之间没有类型化 interface：动作名在发送端与接收端各写一遍，漏改一端就是静默失效。</p>
+        </div>
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Solution</div>
+          <p>把协议常量、payload 类型、发送与接收收进一个遮罩桥 module；overlayUi 只剩 DOM 与样式，screenshot 不再解析字符串，翻译桥并入同一个 seam。</p>
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs uppercase tracking-wider text-slate-500 mb-2">Wins</div>
+        <ul class="text-sm text-slate-700 grid md:grid-cols-2 gap-1 list-disc pl-5">
+          <li>locality：动作定义只在一处</li>
+          <li>发送/接收不再靠人工对齐</li>
+          <li>可用假 WebContents 测协议</li>
+          <li>overlayUi 的 implementation 仍可整体替换</li>
+        </ul>
+      </div>
+      <p class="text-xs text-slate-500">证据强度：高。发送端 <span class="font-mono">onTool</span>（overlayUi.ts:895-938）与接收端 switch（screenshot.ts:335-362）是两份并列的动作清单。</p>
+    </article>
+
+    <!-- C3 -->
+    <article id="c3" class="rounded-lg border border-slate-200 bg-white p-6 space-y-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap">
+        <h3 class="text-xl font-serif font-semibold">3. 把长图会话从 ScreenshotService 里加深出去</h3>
+        <div class="flex gap-2 flex-wrap">
+          <span class="px-2 py-1 rounded text-xs bg-amber-100 text-amber-800 font-medium">Worth exploring</span>
+          <span class="px-2 py-1 rounded text-xs bg-slate-100 text-slate-600 font-mono">in-process</span>
+        </div>
+      </div>
+      <div class="text-sm text-slate-600 font-mono leading-6">
+        src/main/screenshot.ts:144-987（ScreenshotService 约 840 行）· :158-165（长图字段）· :531-568 startPassiveLongShot · :589-637 followLoop · :767-804 finishLongShot · :727-754 HudWatch · :821-851 saveLongShot · :853-875 runLongShotOcr
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="rounded border border-slate-200 p-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before · 一条调用链穿过 6 种职责</div>
+          <div class="space-y-1">
+            <div class="h-9 border-l-4 border-slate-400 pl-3 text-xs flex items-center bg-slate-50">采集生命周期 startCapture / finalize</div>
+            <div class="h-9 border-l-4 border-slate-400 pl-3 text-xs flex items-center bg-slate-50">抓帧 tick + 运动检测</div>
+            <div class="h-9 border-l-4 border-slate-400 pl-3 text-xs flex items-center bg-slate-50">重叠匹配 / 固定表头</div>
+            <div class="h-9 border-l-4 border-slate-400 pl-3 text-xs flex items-center bg-slate-50">HUD 命中轮询 100ms</div>
+            <div class="h-9 border-l-4 border-slate-400 pl-3 text-xs flex items-center bg-slate-50">保存对话框 / 剪贴板</div>
+            <div class="h-9 border-l-4 border-slate-400 pl-3 text-xs flex items-center bg-slate-50">历史写入</div>
+          </div>
+        </div>
+        <div class="rounded border border-slate-200 p-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-3">After · 两个 module 两个 interface</div>
+          <div class="deep rounded p-4 text-white text-xs h-[104px] flex flex-col justify-center">
+            <div class="font-semibold">longShotSession</div>
+            <div class="text-slate-300 mt-1">frames in → stitched + lifecycle events out</div>
+          </div>
+          <div class="mt-2 border border-slate-300 bg-slate-50 p-3 text-xs">ScreenshotService：只保留 capture 生命周期与四个出口</div>
+        </div>
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-6 text-sm">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Problem</div>
+          <p>理解长图必须读完整 1000 行类；抓帧、HUD 轮询、保存、OCR 请求、历史写入都挂在同一个实例状态上。</p>
+        </div>
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Solution</div>
+          <p>长图会话成为独立 module：只接收帧源与选区，产出拼接结果与完成/取消事件；HUD 矩形由遮罩桥回传，不在截图类里轮询鼠标。</p>
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs uppercase tracking-wider text-slate-500 mb-2">Wins</div>
+        <ul class="text-sm text-slate-700 grid md:grid-cols-2 gap-1 list-disc pl-5">
+          <li>长图状态集中，取消/结束只有一处</li>
+          <li>帧源可替换，便于构造测试</li>
+          <li>普通截图路径不再被长图分支污染</li>
+          <li>ScreenshotService 的 interface 变薄</li>
+        </ul>
+      </div>
+      <p class="text-xs text-slate-500">证据强度：中高。长图字段与循环均在同一个类（screenshot.ts:158-165, :589-637）；拆分后的收益程度属判断。</p>
+    </article>
+
+    <!-- C4 -->
+    <article id="c4" class="rounded-lg border border-slate-200 bg-white p-6 space-y-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap">
+        <h3 class="text-xl font-serif font-semibold">4. 修正 pin ↔ pinHistory 的 seam 方向与重复落点计算</h3>
+        <div class="flex gap-2 flex-wrap">
+          <span class="px-2 py-1 rounded text-xs bg-amber-100 text-amber-800 font-medium">Worth exploring</span>
+          <span class="px-2 py-1 rounded text-xs bg-slate-100 text-slate-600 font-mono">in-process</span>
+        </div>
+      </div>
+      <div class="text-sm text-slate-600 font-mono leading-6">
+        src/main/pinHistory.ts:14（import type PinCaptureInput）· :298-325 readPinHistoryInput（光标中心 + clamp 落点）<br/>
+        src/main/pin.ts:7（import recordPinHistory）· :113-123 computePinPlacement
+      </div>
+
+      <div class="rounded border border-slate-200 bg-white p-4">
+        <pre class="mermaid">
+flowchart LR
+  H[pinHistory] -->|import type PinCaptureInput| P[pin]
+  P -->|import recordPinHistory| H
+  H -.->|计算光标落点| X[贴图几何规则]
+  P -.->|computePinPlacement| X
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class H,P leak
+        </pre>
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-6 text-sm">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Problem</div>
+          <p>历史模块知道贴图输入的形状，并自己算落点；同一套 clamp 规则在两个 module 各有一份。</p>
+        </div>
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Solution</div>
+          <p>pinHistory 只返回图片与尺寸；由 pin module 在贴出时算落点，历史不再 import pin。</p>
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs uppercase tracking-wider text-slate-500 mb-2">Wins</div>
+        <ul class="text-sm text-slate-700 grid md:grid-cols-2 gap-1 list-disc pl-5">
+          <li>seam 单向，依赖图无环</li>
+          <li>落点规则只在一处</li>
+          <li>删除重复 clamp</li>
+          <li>历史可独立测试</li>
+        </ul>
+      </div>
+      <p class="text-xs text-slate-500">证据强度：高（两条 import 与两处落点计算都存在）。注意：<span class="font-mono">import type</span> 在编译后被擦除，运行时没有真实环；这里说的是 seam 方向错误，不是运行时崩溃。</p>
+    </article>
+
+    <!-- C5 -->
+    <article id="c5" class="rounded-lg border-2 border-slate-900 bg-white p-6 space-y-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap">
+        <h3 class="text-xl font-serif font-semibold">5. index.ts 收敛为组合根，把领域规则还给领域 module</h3>
+        <div class="flex gap-2 flex-wrap">
+          <span class="px-2 py-1 rounded text-xs bg-emerald-100 text-emerald-800 font-medium">Strong</span>
+          <span class="px-2 py-1 rounded text-xs bg-slate-100 text-slate-600 font-mono">in-process</span>
+        </div>
+      </div>
+      <div class="text-sm text-slate-600 font-mono leading-6">
+        src/main/index.ts:28-64（import 9 个本地 module）· :73-110（全局可变 state + broadcast）· :112-134 通知 · :149-174 托盘菜单 · :261-299 图标 · :301-320 自启 · :330-358 翻译桥<br/>
+        :368-578 boot() · :426-570 33 处 IPC 注册 · :463-497 OCR 语言设置（规则在 ocr.ts:440，另在 ocr.ts:543-548 再次调用）
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="rounded border border-slate-200 p-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-2">Before · hub 同时做五件事</div>
+          <pre class="mermaid">
+flowchart TB
+  I[index.ts]
+  I --> A[窗口/托盘]
+  I --> B[配置读取与保存]
+  I --> C[IPC 注册 + 参数校验]
+  I --> D[业务编排 截图/贴图/OCR/翻译]
+  I --> E[通知文案]
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class I leak
+          </pre>
+        </div>
+        <div class="rounded border border-slate-200 p-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-2">After · 组合根只连不判</div>
+          <pre class="mermaid">
+flowchart TB
+  I[app lifecycle] --> R1[settings 注册]
+  I --> R2[history 注册]
+  I --> R3[pin window 注册]
+  I --> R4[capture 注册]
+  R1 --> M1[domain modules]
+  R2 --> M1
+  R3 --> M1
+  R4 --> M1
+  classDef deep fill:#0f172a,color:#fff,stroke:#0f172a;
+  class I,R1,R2,R3,R4 deep
+          </pre>
+        </div>
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-6 text-sm">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Problem</div>
+          <p>每加一个设置就要同时改全局 state、handler、广播与托盘/通知文案；OCR 语言的回退判定在 handler 里再包一层，与 ocr 模块内部的调用点并存。</p>
+        </div>
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Solution</div>
+          <p>index.ts 只留 app 生命周期与装配；按领域提供注册函数，state 由一个小 store 持有；参数校验与回退规则下沉到领域 module。</p>
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs uppercase tracking-wider text-slate-500 mb-2">Wins</div>
+        <ul class="text-sm text-slate-700 grid md:grid-cols-2 gap-1 list-disc pl-5">
+          <li>locality：改一个设置只碰一处</li>
+          <li>规则不再两份，回退行为一致</li>
+          <li>领域可测，不必启动整个 app</li>
+          <li>index.ts 回到可一眼读完的装配面</li>
+        </ul>
+      </div>
+      <p class="text-xs text-slate-500">证据强度：高。9 个本地 module 的 import（:28-64）与 33 处 IPC 注册都在同一函数体内；OCR 语言逻辑确有两份。</p>
+    </article>
+
+    <!-- C6 -->
+    <article id="c6" class="rounded-lg border border-slate-200 bg-white p-6 space-y-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap">
+        <h3 class="text-xl font-serif font-semibold">6. App.tsx 按视图与领域拆开</h3>
+        <div class="flex gap-2 flex-wrap">
+          <span class="px-2 py-1 rounded text-xs bg-amber-100 text-amber-800 font-medium">Worth exploring</span>
+          <span class="px-2 py-1 rounded text-xs bg-slate-100 text-slate-600 font-mono">in-process</span>
+        </div>
+      </div>
+      <div class="text-sm text-slate-600 font-mono leading-6">
+        src/renderer/src/App.tsx:221-868（单组件 650 行）· :222-232（9 个 state + timer）· :240-298（5 个 effect）· :306-366（10 个动作）· :469-849（历史 / 设置 / 首页 / 图标四视图）
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="rounded border border-slate-200 p-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before · 一个组件</div>
+          <div class="border border-slate-300 bg-slate-50 h-40 flex items-center justify-center text-xs text-slate-600">App：state + effects + 10 个 handler + 4 个视图 + toast</div>
+        </div>
+        <div class="rounded border border-slate-200 p-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-3">After · 视图各持其状态</div>
+          <div class="grid grid-cols-2 gap-2">
+            <div class="border-2 border-slate-900 h-[52px] flex items-center justify-center text-[10px]">HomeView</div>
+            <div class="border-2 border-slate-900 h-[52px] flex items-center justify-center text-[10px]">HistoryView</div>
+            <div class="border-2 border-slate-900 h-[52px] flex items-center justify-center text-[10px]">SettingsView</div>
+            <div class="border-2 border-slate-900 h-[52px] flex items-center justify-center text-[10px]">IconPane</div>
+            <div class="col-span-2 border border-slate-400 h-7 flex items-center justify-center text-[10px]">App 只做路由与共享 state</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-6 text-sm">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Problem</div>
+          <p>任一视图的改动都要经过同一份 state 与同一组 handler，历史页与图标页没有各自的局部状态。</p>
+        </div>
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Solution</div>
+          <p>按视图拆 module，各视图内的 snip 调用收进自己的 hook；App 只保留路由与跨视图共享状态（toast、state）。</p>
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs uppercase tracking-wider text-slate-500 mb-2">Wins</div>
+        <ul class="text-sm text-slate-700 grid md:grid-cols-2 gap-1 list-disc pl-5">
+          <li>每个视图可独立渲染测试</li>
+          <li>改动面从 650 行降到单视图</li>
+          <li>toast/错误处理不再散落</li>
+          <li>无行为变化</li>
+        </ul>
+      </div>
+      <p class="text-xs text-slate-500">证据强度：中。文件长度与视图切换都在同一组件内属实；但「长组件」本身不构成故障，见「风格偏好」。</p>
+    </article>
+
+    <!-- C7 -->
+    <article id="c7" class="rounded-lg border border-slate-200 bg-white p-6 space-y-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap">
+        <h3 class="text-xl font-serif font-semibold">7. 配置改为被接受的依赖，而非深处直接读盘</h3>
+        <div class="flex gap-2 flex-wrap">
+          <span class="px-2 py-1 rounded text-xs bg-slate-200 text-slate-700 font-medium">Speculative</span>
+          <span class="px-2 py-1 rounded text-xs bg-slate-100 text-slate-600 font-mono">local-substitutable</span>
+        </div>
+      </div>
+      <div class="text-sm text-slate-600 font-mono leading-6">
+        src/main/config.ts:109-128（loadConfig / saveConfig 每次读改写）· src/main/ocr.ts:8, :543-548（configuredLanguage 内部 loadConfig）<br/>
+        src/main/pinHistory.ts:13, :17-19（historyLimit() 每次读盘）, :179
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="rounded border border-slate-200 p-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before · 隐藏依赖</div>
+          <div class="space-y-3">
+            <div class="border border-slate-300 bg-slate-50 p-3 text-xs">ocrService <span class="text-red-600">→ loadConfig()</span></div>
+            <div class="border border-slate-300 bg-slate-50 p-3 text-xs">pinHistory <span class="text-red-600">→ loadConfig()</span></div>
+            <div class="border border-slate-400 bg-white p-3 text-xs">测试必须准备真实 userData 目录</div>
+          </div>
+        </div>
+        <div class="rounded border border-slate-200 p-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-3">After · 一个配置值从入口进来</div>
+          <div class="deep rounded p-4 text-white text-xs h-[120px] flex flex-col justify-center gap-2">
+            <div>启动时 loadConfig 一次</div>
+            <div class="text-slate-300">→ 作为参数传入 ocr / history</div>
+            <div class="text-slate-300">→ 测试传内存对象</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-6 text-sm">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Problem</div>
+          <p>模块在调用时自己读磁盘，依赖不可见；历史写入路径每次记录都多一次文件读取（pinHistory.ts:179）。</p>
+        </div>
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Solution</div>
+          <p>启动读取一次，把值作为参数或 getter 传给需要它的 module；模块不再 import config。</p>
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs uppercase tracking-wider text-slate-500 mb-2">Wins</div>
+        <ul class="text-sm text-slate-700 grid md:grid-cols-2 gap-1 list-disc pl-5">
+          <li>测试不走文件系统</li>
+          <li>配置读取入口只有一处</li>
+          <li>写入路径少一次 I/O</li>
+          <li>依赖在签名上可见</li>
+        </ul>
+      </div>
+      <p class="text-xs text-slate-500">证据强度：中。直接读盘属实；收益大小取决于后续是否为这些模块写单测，故标 Speculative。</p>
+    </article>
+
+    <!-- C8 -->
+    <article id="c8" class="rounded-lg border border-slate-200 bg-white p-6 space-y-6">
+      <div class="flex items-start justify-between gap-4 flex-wrap">
+        <h3 class="text-xl font-serif font-semibold">8. 唯一测试面是整机自检</h3>
+        <div class="flex gap-2 flex-wrap">
+          <span class="px-2 py-1 rounded text-xs bg-amber-100 text-amber-800 font-medium">Worth exploring</span>
+          <span class="px-2 py-1 rounded text-xs bg-slate-100 text-slate-600 font-mono">in-process</span>
+        </div>
+      </div>
+      <div class="text-sm text-slate-600 font-mono leading-6">
+        src/main/index.ts:573-576（--selftest 直接 runSelftest）· src/main/selftest.ts · package.json scripts:selftest = build + electron . --selftest
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="rounded border border-slate-200 p-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-3">Before · 测试跨整机</div>
+          <div class="space-y-1">
+            <div class="h-9 border-l-4 border-red-500 pl-3 text-xs flex items-center bg-red-50">build</div>
+            <div class="h-9 border-l-4 border-red-500 pl-3 text-xs flex items-center bg-red-50">启动 Electron</div>
+            <div class="h-9 border-l-4 border-red-500 pl-3 text-xs flex items-center bg-red-50">注入 DOM / 输入事件</div>
+            <div class="h-9 border-l-4 border-red-500 pl-3 text-xs flex items-center bg-red-50">断言整机行为</div>
+          </div>
+        </div>
+        <div class="rounded border border-slate-200 p-4">
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-3">After · 两层</div>
+          <div class="deep rounded p-4 text-white text-xs h-[100px] flex flex-col justify-center gap-2">
+            <div>纯逻辑：stitch / merge / accelerator / placement</div>
+            <div class="text-slate-300">直接在 interface 上测</div>
+          </div>
+          <div class="mt-2 border border-slate-300 bg-slate-50 p-3 text-xs">selftest 保留：端到端回归</div>
+        </div>
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-6 text-sm">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Problem</div>
+          <p>取一帧、matchOverlap、normalizeOcrText 这类纯逻辑也只能跟着整机跑，失败时定位范围是整个 app。</p>
+        </div>
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-500 mb-1">Solution</div>
+          <p>把已在 interface 上暴露的纯函数纳入直接测试；selftest 只保留必须跨进程的路径。</p>
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs uppercase tracking-wider text-slate-500 mb-2">Wins</div>
+        <ul class="text-sm text-slate-700 grid md:grid-cols-2 gap-1 list-disc pl-5">
+          <li>反馈时间从分钟到秒级</li>
+          <li>回归定位到函数</li>
+          <li>selftest 变薄、更稳</li>
+          <li>纯逻辑不再依赖 Electron</li>
+        </ul>
+      </div>
+      <p class="text-xs text-slate-500">证据强度：中高。入口与脚本属实；selftest 内部结构未逐行阅读，属推测。</p>
+    </article>
+  </section>
+
+  <section id="risk-vs-preference" class="space-y-6">
+    <h2 class="text-xl font-serif font-semibold">真实风险 vs 风格偏好</h2>
+    <div class="grid md:grid-cols-2 gap-6">
+      <div class="rounded-lg border border-red-200 bg-red-50/40 p-5">
+        <h3 class="text-sm font-semibold text-red-800 uppercase tracking-wider mb-3">真实风险（有代码依据，会导致失效或改动扩散）</h3>
+        <ul class="text-sm space-y-3 list-disc pl-5 text-slate-800">
+          <li><strong>遮罩协议双实现</strong>：发送端 overlayUi.ts:895-938 与接收端 screenshot.ts:335-362 各自维护动作名，漏改即静默失效。</li>
+          <li><strong>index.ts 单点耦合</strong>：9 个 module 的 import、33 处 IPC 注册集中在 boot；OCR 语言的校验/回退入口分散在 index.ts:463-497 与 ocr.ts:543-548，易出现只在其中一处改动的分叉。</li>
+          <li><strong>pinHistory 反向依赖 pin</strong>：pinHistory.ts:298-325 自带落点计算并与 pin.ts:113-123 重复；seam 方向错，不修不会立刻崩，但后续改几何会漏一处。</li>
+          <li><strong>测试面过窄</strong>：唯一入口是整机 selftest（index.ts:573-576），纯逻辑没有直接 interface 测试，回归定位成本高。</li>
+          <li><strong>宽 IPC 暴露高权限动作（低severity）</strong>：SnipApi 直接暴露 quit（ipc.ts:191），任何 renderer 页面都能触发退出；contextIsolation 已开且为本地应用，风险等级低，但契约确实过宽。</li>
+        </ul>
+      </div>
+      <div class="rounded-lg border border-slate-200 bg-white p-5">
+        <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wider mb-3">风格偏好（不构成必须改）</h3>
+        <ul class="text-sm space-y-3 list-disc pl-5 text-slate-700">
+          <li><strong>App.tsx 650 行</strong>：无 bug 证据，只是维护偏好；拆不拆取决于后续 UI 迭代频率。</li>
+          <li><strong>preload 机械转发</strong>：这是边界 adapter 的本职；删除测试会失败，因为复杂度会回到每个调用点。不应为了「更深」强行合并。</li>
+          <li><strong>overlayUi 的 CSS / 脚本字符串</strong>：注入库页面是既定约束，字符串本身不是缺陷。</li>
+          <li><strong>config 每次读盘</strong>：开销可忽略；只有为模块补单测时才值得改成依赖注入。</li>
+          <li><strong>文件命名与目录结构</strong>：本报告不做评价。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="top-recommendation" class="space-y-4">
+    <h2 class="text-xl font-serif font-semibold">Top recommendation</h2>
+    <div class="rounded-lg border-2 border-slate-900 bg-white p-6">
+      <div class="flex items-baseline gap-3 flex-wrap">
+        <h3 class="text-lg font-semibold">先做 #5：index.ts 收敛为组合根</h3>
+        <span class="px-2 py-1 rounded text-xs bg-emerald-100 text-emerald-800">低行为风险</span>
+      </div>
+      <p class="text-sm text-slate-700 mt-3">
+        它是近 8 次提交里出现 5 次的热点，也是所有新设置、新 IPC 的必经之路；只搬装配与校验，不动截图/贴图/OCR 行为，
+        可以在现有硬约束下先拿到 locality。做完 #5，再做 <a href="#c2" class="underline">#2 遮罩桥接</a>——
+        #2 收益更大但会碰普通截图路径，必须单独排期并先补端到端回归。
+      </p>
+    </div>
+  </section>
+
+  <footer class="text-xs text-slate-500 border-t border-slate-200 pt-6 space-y-2">
+    <p>产出：<span class="font-mono">docs/architecture-review-20261106/report.html</span>。按技能默认写入临时目录；本次按任务授权改写到仓库 docs 目录。</p>
+    <p>本报告只读源码，未修改任何业务代码、README 或既有文档。</p>
+  </footer>
+
+</main>
+</body>
+</html>
