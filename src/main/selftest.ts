@@ -7,13 +7,14 @@ import {
   OVERLAY_ACTION_PREFIX,
   OVERLAY_COPY_PREFIX,
   OVERLAY_HUD_RECT_PREFIX,
+  OVERLAY_REPLY_CHANNELS,
+  OVERLAY_REPLY_NAMES,
   OVERLAY_TRANSLATE_PREFIX,
   OVERLAY_TRANSLATE_STATUS_PREFIX,
   parseOverlayConsoleMessage,
 } from '@shared/overlayProtocol'
 import { HOME_TITLE, openMainWindow } from './homeWindow'
-import { registeredIpcChannels } from './ipc/registry'
-import { overlayBridgeRegistrationCount } from './overlayBridge'
+import { testHooks } from './testHooks'
 import {
   LONG_BOTTOM_TICKS,
   LONG_STABLE_TICKS,
@@ -45,7 +46,7 @@ import {
   resolvePinImagePath,
 } from './pin'
 import { listPinHistory, pinHistoryDir, recordPinHistory, setPinHistoryLimit } from './pinHistory'
-import { loadConfig, saveConfig } from './config'
+import { loadConfig, realUserDataPath, saveConfig, selftestDataDir } from './config'
 import { screenshotService, trayIconPath, type CaptureOutcome } from './screenshot'
 import { fingerprintPixels, framesLookSame, stitchVertical } from './stitch'
 import { translate, translateStatus } from './translate'
@@ -506,7 +507,7 @@ async function testHomeWindow(shotPath: string): Promise<void> {
     missingChannels.length === 0 && changedChannels.length === 0 && extraChannels.length === 0,
     { missing: missingChannels, changed: changedChannels, extra: extraChannels },
   )
-  const inboundChannels = registeredIpcChannels()
+  const inboundChannels = testHooks.registeredIpcChannels()
   const outboundChannels = new Set<string>([
     IPC.stateChanged,
     IPC.pinHistoryChanged,
@@ -554,6 +555,17 @@ async function testHomeWindow(shotPath: string): Promise<void> {
       overlayPrefixes.translateStatus === '__SNIP_TRANSLATE_STATUS__',
     overlayPrefixes,
   )
+  const overlayReply = { names: OVERLAY_REPLY_NAMES, channels: OVERLAY_REPLY_CHANNELS }
+  check(
+    '遮罩回送通道名未变',
+    OVERLAY_REPLY_NAMES.ocrResult === 'ocr-result' &&
+      OVERLAY_REPLY_NAMES.translateStatus === 'translate-status' &&
+      OVERLAY_REPLY_NAMES.translateResult === 'translate-result' &&
+      OVERLAY_REPLY_CHANNELS.ocrResult === 'SCREENSHOTS:ocr-result' &&
+      OVERLAY_REPLY_CHANNELS.translateStatus === 'SCREENSHOTS:translate-status' &&
+      OVERLAY_REPLY_CHANNELS.translateResult === 'SCREENSHOTS:translate-result',
+    overlayReply,
+  )
   const unknownOverlayAction = parseOverlayConsoleMessage(
     `${OVERLAY_ACTION_PREFIX}{"action":"not-a-real-action"}`,
   )
@@ -577,8 +589,8 @@ async function testHomeWindow(shotPath: string): Promise<void> {
   )
   check(
     '翻译请求单点接收',
-    overlayBridgeRegistrationCount() === 1,
-    { registrations: overlayBridgeRegistrationCount() },
+    testHooks.overlayBridgeRegistrationCount() === 1,
+    { registrations: testHooks.overlayBridgeRegistrationCount() },
   )
   check(
     '长图时序常量未变',
@@ -964,13 +976,13 @@ async function testOcrSidebar(wc: WebContents): Promise<void> {
   )
   check('OCR 后遮罩保持打开', sidebarShown === true, { overlay: Boolean(findOverlayWindow()) })
 
-  const view = screenshotService.view
+  const view = testHooks.overlayView()
   if (!view) {
     check('拿到遮罩视图', false, {})
     return
   }
   // 强制推送已知结果，稳定测试侧栏渲染/复制；真实 OCR 链路由 testOcr 覆盖
-  view.send('SCREENSHOTS:ocr-result', {
+  view.send(OVERLAY_REPLY_CHANNELS.ocrResult, {
     requestId: Date.now() + 1000,
     status: 'ready',
     text: '自检 OCR 文本 ABC 123',
@@ -1083,7 +1095,7 @@ async function testOcrSidebar(wc: WebContents): Promise<void> {
   )
 
   // 翻译：中文源禁用 → 英文源启用 → 真实翻译 → 失败态 → 未安装态
-  wc.send('SCREENSHOTS:translate-status', {
+  wc.send(OVERLAY_REPLY_CHANNELS.translateStatus, {
     pluginDir: join(app.getPath('userData'), 'plugins', 'translate-locally'),
     directions: {
       'en-zh': { available: true, reason: null },
@@ -1101,7 +1113,7 @@ async function testOcrSidebar(wc: WebContents): Promise<void> {
     zhTranslate,
   )
 
-  wc.send('SCREENSHOTS:ocr-result', {
+  wc.send(OVERLAY_REPLY_CHANNELS.ocrResult, {
     requestId: Date.now() + 2000,
     status: 'ready',
     text: 'Hello, how are you?',
@@ -1121,7 +1133,7 @@ async function testOcrSidebar(wc: WebContents): Promise<void> {
 
   // 用真实插件状态覆盖上面的假注入：可用时走真实翻译，不可用时按钮必须保持置灰
   const enZhAvailable = translateStatus().directions['en-zh'].available
-  wc.send('SCREENSHOTS:translate-status', translateStatus())
+  wc.send(OVERLAY_REPLY_CHANNELS.translateStatus, translateStatus())
   await sleep(150)
 
   const translateClicked = await evalJson<boolean>(
@@ -1187,7 +1199,7 @@ async function testOcrSidebar(wc: WebContents): Promise<void> {
   }
 
   if (enZhAvailable) {
-    wc.send('SCREENSHOTS:translate-result', { ok: false, reason: '自检翻译失败提示' })
+    wc.send(OVERLAY_REPLY_CHANNELS.translateResult, { ok: false, reason: '自检翻译失败提示' })
     await sleep(150)
     const failedTranslate = await evalJson<{ status: string; original: string }>(
       wc,
@@ -1216,7 +1228,7 @@ async function testOcrSidebar(wc: WebContents): Promise<void> {
     )
   }
 
-  wc.send('SCREENSHOTS:translate-status', {
+  wc.send(OVERLAY_REPLY_CHANNELS.translateStatus, {
     pluginDir: 'C:\\fake\\plugins\\translate-locally',
     directions: {
       'en-zh': { available: false, reason: '未安装翻译插件' },
@@ -1263,7 +1275,7 @@ async function testOcrSidebar(wc: WebContents): Promise<void> {
     wc,
     `const b = document.querySelector('.snip-sidebar-close'); if (!b) return false; b.click(); return true;`,
   )
-  view.send('SCREENSHOTS:ocr-result', {
+  view.send(OVERLAY_REPLY_CHANNELS.ocrResult, {
     requestId: Date.now() + 5000,
     status: 'ready',
     text: '迟到的结果',
@@ -2384,6 +2396,10 @@ async function testLongShot(wc: WebContents, outcomes: CaptureOutcome[], scaleFa
 }
 
 export async function runSelftest(): Promise<void> {
+  // 数据目录已在 index 启动时（单实例锁之前）切到临时沙箱，这里只取路径用于断言与清理
+  const realUserData = realUserDataPath()
+  const dataSandbox = selftestDataDir()
+
   const outcomes: CaptureOutcome[] = []
   screenshotService.onOutcome((outcome) => outcomes.push(outcome))
 
@@ -2402,13 +2418,19 @@ export async function runSelftest(): Promise<void> {
   if (app.isPackaged) {
     const base = process.env['PORTABLE_EXECUTABLE_DIR'] ?? dirname(app.getPath('exe'))
     const expected = resolve(join(base, 'data'))
-    const actual = resolve(app.getPath('userData'))
+    const actual = resolve(realUserData)
     check('运行数据位于程序目录 data/ 下', actual === expected, { actual, expected })
     const legacy = join(app.getPath('appData'), 'snip-ocr')
     check('旧 %APPDATA% 数据目录已清理', !existsSync(legacy), { legacy })
   } else {
-    info('开发模式使用默认 userData，不校验安装目录布局', { userData: app.getPath('userData') })
+    info('开发模式使用默认 userData，不校验安装目录布局', { userData: realUserData })
   }
+  check(
+    '自检数据已隔离到临时沙箱',
+    resolve(app.getPath('userData')) === resolve(dataSandbox) &&
+      resolve(dataSandbox) !== resolve(realUserData),
+    { userData: app.getPath('userData'), realUserData },
+  )
 
   const altA = screenshotService.setHotkey(DEFAULT_HOTKEY)
   info('默认快捷键 Alt+A 注册结果（false 通常表示被其它应用占用）', altA)
@@ -2423,7 +2445,7 @@ export async function runSelftest(): Promise<void> {
   await screenshotService.startCapture()
   const overlay = findOverlayWindow()
   check('截图遮罩窗出现', Boolean(overlay), { title: overlay?.getTitle() ?? null })
-  const wc = screenshotService.view
+  const wc = testHooks.overlayView()
   if (!wc) {
     check('拿到截图视图', false, {})
     app.exit(1)
@@ -2452,6 +2474,82 @@ export async function runSelftest(): Promise<void> {
       stack: error instanceof Error ? error.stack : null,
     })
   }
+
+  // 快捷键冲突：注册失败不阻断截图入口；占用释放后主窗显示触发立即重试并广播恢复。
+  // 放在截图/贴图/长图用例之后，避免改变主窗与遮罩的时序。
+  const homeWin = openMainWindow()
+  await sleep(500)
+  const originalHotkey = (
+    await evalJson<{ hotkey: string }>(homeWin.webContents, `return await window.snip.getState();`)
+  ).hotkey
+  const blockedKey = 'Ctrl+Alt+Shift+F9'
+  globalShortcut.unregister(blockedKey)
+  const occupied = globalShortcut.register(blockedKey, () => {})
+  const conflict = await evalJson<{
+    result: { ok: boolean; error?: string }
+    state: { hotkey: string; hotkeyError: string | null }
+  }>(
+    homeWin.webContents,
+    `const result = await window.snip.setHotkey(${JSON.stringify(blockedKey)});
+     const state = await window.snip.getState();
+     return { result, state };`,
+  )
+  check(
+    '快捷键冲突时注册失败但如实上报错误',
+    occupied && !conflict.result.ok && Boolean(conflict.state.hotkeyError),
+    { occupied, result: conflict.result, hotkeyError: conflict.state.hotkeyError },
+  )
+
+  await evalJson(homeWin.webContents, `window.snip.startCapture(); return true;`)
+  const conflictOverlay = await waitForValue(() => findOverlayWindow() ?? null, 3000)
+  check(
+    '快捷键冲突不影响主窗按钮发起截图',
+    Boolean(conflictOverlay),
+    { overlay: conflictOverlay?.getTitle() ?? null },
+  )
+  await screenshotService.stopCapture()
+  await sleep(300)
+
+  await evalJson(
+    homeWin.webContents,
+    `window.__snipHotkeyState = null;
+     if (!window.__snipHotkeyUnsub) {
+       window.__snipHotkeyUnsub = window.snip.onStateChanged((state) => { window.__snipHotkeyState = state; });
+     }
+     return true;`,
+  )
+  globalShortcut.unregister(blockedKey)
+  homeWin.hide()
+  openMainWindow()
+  await sleep(300)
+  const healed = await evalJson<{
+    state: { hotkey: string; hotkeyError: string | null }
+    broadcast: { hotkey: string; hotkeyError: string | null } | null
+  }>(
+    homeWin.webContents,
+    `return { state: await window.snip.getState(), broadcast: window.__snipHotkeyState || null };`,
+  )
+  const healedRegistered = globalShortcut.isRegistered(blockedKey)
+  check(
+    '释放占用后立即重试恢复：错误清除、托盘与广播同步',
+    healed.state.hotkeyError === null &&
+      healed.state.hotkey === blockedKey &&
+      healedRegistered &&
+      healed.broadcast !== null &&
+      healed.broadcast.hotkeyError === null &&
+      healed.broadcast.hotkey === blockedKey,
+    {
+      hotkey: healed.state.hotkey,
+      hotkeyError: healed.state.hotkeyError,
+      registered: healedRegistered,
+      broadcast: healed.broadcast,
+    },
+  )
+  await evalJson(
+    homeWin.webContents,
+    `window.__snipHotkeyUnsub?.(); window.__snipHotkeyUnsub = null;
+     return await window.snip.setHotkey(${JSON.stringify(originalHotkey)});`,
+  )
 
   const history = await listPinHistory()
   const sources = new Set(history.map((item) => item.source))
@@ -2486,6 +2584,7 @@ export async function runSelftest(): Promise<void> {
   check('截图历史档位切回 10 生效', loadConfig().historyLimit === 10, { limit: loadConfig().historyLimit })
 
   screenshotService.dispose()
+  // 沙箱留在临时目录由下次启动清理：此时 Chromium 仍占用其中的缓存文件，立即删会 EPERM
   console.log(failures === 0 ? '[selftest] ALL PASS' : `[selftest] ${failures} FAILED`)
   app.exit(failures === 0 ? 0 : 1)
 }

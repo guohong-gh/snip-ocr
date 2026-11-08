@@ -1,7 +1,7 @@
 import { app, clipboard, dialog, nativeImage } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import {
   HISTORY_SOURCES,
@@ -10,6 +10,7 @@ import {
   type PinHistoryItem,
   type SetHotkeyResult,
 } from '@shared/ipc'
+import { removeFileEventually } from './tempFiles'
 import { loadConfig } from './config'
 
 /** 当前保留档位，动态读取配置，切换后立即生效 */
@@ -43,6 +44,8 @@ export function pinHistoryDir(): string {
 }
 
 let loaded: StoredPinHistoryItem[] | null = null
+/** 索引是否有条目的内存快照，供首页状态同步读取（唯一事实源仍是索引本身） */
+let hasItemsCache = false
 let queue: Promise<unknown> = Promise.resolve()
 const changeListeners = new Set<() => void>()
 
@@ -86,9 +89,7 @@ function isValidItem(value: unknown): value is StoredPinHistoryItem {
 }
 
 async function removeFiles(files: string[]): Promise<void> {
-  await Promise.all(
-    files.map((file) => unlink(join(pinHistoryDir(), file)).catch(() => undefined)),
-  )
+  await Promise.all(files.map((file) => removeFileEventually(join(pinHistoryDir(), file))))
 }
 
 /** 清理索引未引用的残留文件（写入中断、旧版本遗留），不动索引内的历史 */
@@ -137,6 +138,7 @@ async function ensureLoaded(): Promise<StoredPinHistoryItem[]> {
   const kept = valid.slice(0, limit)
   const dropped = valid.slice(limit)
   loaded = kept
+  hasItemsCache = kept.length > 0
   await cleanupOrphans(kept)
   if (dropped.length > 0 || kept.length !== items.length) {
     await removeFiles(dropped.flatMap((item) => [item.file, item.thumb]))
@@ -178,6 +180,7 @@ export function recordPinHistory(
     const dropped = items.splice(historyLimit())
     await removeFiles(dropped.flatMap((item) => [item.file, item.thumb]))
     await saveIndex(items)
+    hasItemsCache = items.length > 0
     for (const listener of changeListeners) listener()
   })
 }
@@ -191,6 +194,7 @@ export function setPinHistoryLimit(limit: HistoryLimit): Promise<void> {
       await removeFiles(dropped.flatMap((item) => [item.file, item.thumb]))
       await saveIndex(items)
     }
+    hasItemsCache = items.length > 0
     for (const listener of changeListeners) listener()
   })
 }
@@ -224,6 +228,11 @@ export function hasPinHistory(): Promise<boolean> {
   })
 }
 
+/** 索引条目的同步快照，供 buildState 推导 hasHistory；真实值以索引为准 */
+export function hasPinHistorySnapshot(): boolean {
+  return hasItemsCache
+}
+
 export function deletePinHistory(id: string): Promise<void> {
   return enqueue(async () => {
     const items = await ensureLoaded()
@@ -232,6 +241,7 @@ export function deletePinHistory(id: string): Promise<void> {
     const [removed] = items.splice(index, 1)
     await removeFiles([removed.file, removed.thumb])
     await saveIndex(items)
+    hasItemsCache = items.length > 0
     for (const listener of changeListeners) listener()
   })
 }
@@ -243,6 +253,7 @@ export function clearPinHistory(): Promise<void> {
     await removeFiles(items.flatMap((item) => [item.file, item.thumb]))
     items.length = 0
     await saveIndex(items)
+    hasItemsCache = false
     for (const listener of changeListeners) listener()
   })
 }

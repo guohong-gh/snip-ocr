@@ -32,17 +32,27 @@ const DEFAULTS: StoredConfig = {
 }
 
 let legacyDataDir: string | null = null
+/** 切换自检沙箱前记录的真实数据目录，供自检断言使用 */
+let configuredUserData: string | null = null
+/** 配置内存缓存：读操作不再逐次读盘，写操作落盘后同步更新 */
+let cachedConfig: StoredConfig | null = null
 
 /**
  * 打包态把运行数据放在程序目录的 data/ 下（Portable 放便携 exe 旁边），
  * 这样卸载时随安装目录一起删除，不在 %APPDATA% 留配置、缓存和贴图临时文件。
  */
 export function configureDataDirectory(): void {
-  if (!app.isPackaged) return
+  if (!app.isPackaged) {
+    configuredUserData = app.getPath('userData')
+    return
+  }
   const base = process.env['PORTABLE_EXECUTABLE_DIR'] ?? dirname(app.getPath('exe'))
   const target = join(base, 'data')
   const current = app.getPath('userData')
-  if (resolve(current) === resolve(target)) return
+  if (resolve(current) === resolve(target)) {
+    configuredUserData = current
+    return
+  }
   try {
     mkdirSync(target, { recursive: true })
     // 目录已存在但不可写时 mkdir 不会报错，只有真正写文件才会失败
@@ -55,6 +65,28 @@ export function configureDataDirectory(): void {
   } catch (error) {
     console.error('[snip] data dir 不可写，回退默认 userData:', error)
   }
+  configuredUserData = app.getPath('userData')
+}
+
+/** 自检数据沙箱目录（临时目录，下次自检启动时清空） */
+export function selftestDataDir(): string {
+  return join(app.getPath('temp'), 'snip-selftest-data')
+}
+
+/**
+ * 自检使用独立临时目录，避免自检写真实配置、历史与贴图临时文件。
+ * 必须在单实例锁之前调用，否则锁文件与 Chromium 缓存仍会落到真实目录。
+ */
+export function useSelftestDataSandbox(): void {
+  const target = selftestDataDir()
+  rmSync(target, { recursive: true, force: true })
+  mkdirSync(target, { recursive: true })
+  app.setPath('userData', target)
+}
+
+/** 自检断言用：切换沙箱之前记录的真实 userData */
+export function realUserDataPath(): string {
+  return configuredUserData ?? app.getPath('userData')
 }
 
 /** 迁移旧版 config.json 后删除整个旧目录；必须在单实例锁之后、loadConfig 之前调用 */
@@ -107,23 +139,26 @@ function normalize(raw: unknown): StoredConfig {
 }
 
 export function loadConfig(): StoredConfig {
+  if (cachedConfig) return { ...cachedConfig }
   try {
     const file = configPath()
-    if (!existsSync(file)) return { ...DEFAULTS }
-    return normalize(JSON.parse(readFileSync(file, 'utf-8')))
+    const raw = existsSync(file) ? JSON.parse(readFileSync(file, 'utf-8')) : null
+    cachedConfig = normalize(raw)
   } catch {
-    return { ...DEFAULTS }
+    cachedConfig = { ...DEFAULTS }
   }
+  return { ...cachedConfig }
 }
 
 export function saveConfig(patch: Partial<StoredConfig>): StoredConfig {
-  const next = { ...loadConfig(), ...patch }
+  const next = { ...(cachedConfig ?? loadConfig()), ...patch }
   const file = configPath()
   mkdirSync(dirname(file), { recursive: true })
   // 先写临时文件再改名，避免写入中断留下半个 json
   const tmp = `${file}.tmp`
   writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf-8')
   renameSync(tmp, file)
+  cachedConfig = next
   return next
 }
 

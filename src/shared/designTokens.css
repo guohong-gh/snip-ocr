@@ -1,0 +1,76 @@
+/*
+ * 设计令牌单一来源：主窗（styles.css）、遮罩（overlay.css）、贴图页（pin.css）共用。
+ * 只放跨页面重复的色值、字体与圆角；页面专属的一次性颜色留在各自文件。
+ */
+:root {
+  color-scheme: light dark;
+
+  /* 随系统主题切换的中性色 */
+  --tone-paper: #f4f5f1;
+  --tone-plate: #fbfcf8;
+  --tone-ink: #181a17;
+  --tone-ink-2: #565b54;
+  --tone-ink-3: #666b63;
+  --tone-overlay-ink-3: #8a8f86;
+  --tone-rule: rgba(24, 26, 23, 0.14);
+  --tone-rule-2: rgba(24, 26, 23, 0.42);
+  --tone-overlay-rule: rgba(24, 26, 23, 0.16);
+  --tone-hover: rgba(24, 26, 23, 0.06);
+
+  /* 随系统主题切换的品牌色 */
+  --tone-signal: #2456b8;
+  --tone-signal-hover: #1b4699;
+  --tone-signal-weak: rgba(36, 86, 184, 0.1);
+  --tone-on-signal: #ffffff;
+  --tone-proof: #c33d26;
+  --tone-proof-weak: rgba(195, 61, 38, 0.1);
+
+  /* 固定亮色面板：遮罩工具栏与贴图条不随系统深色变化 */
+  --tone-panel-paper: #f4f5f1;
+  --tone-panel-plate: #fbfcf8;
+  --tone-panel-ink: #181a17;
+  --tone-panel-ink-2: #565b54;
+  --tone-panel-rule-2: rgba(24, 26, 23, 0.42);
+  --tone-panel-signal: #2456b8;
+  --tone-panel-on-signal: #ffffff;
+  --tone-panel-proof: #c33d26;
+  --tone-panel-hover: #eceded;
+  --tone-panel-ink-3: #8a8f86;
+  --tone-panel-surface: #ffffff;
+  --tone-panel-inverse: #f2f2ec;
+  --tone-panel-bright: #8fb3ff;
+  --tone-panel-scrim: rgba(20, 21, 23, 0.86);
+  --tone-panel-scrim-soft: rgba(20, 21, 23, 0.82);
+  --tone-panel-scrim-strong: rgba(20, 21, 23, 0.9);
+
+  /* 字体 */
+  --font-sans: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif;
+  --font-mono: 'Cascadia Mono', Consolas, ui-monospace, 'SFMono-Regular', monospace;
+
+  /* 圆角 */
+  --radius-xs: 1px;
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tone-paper: #191c1e;
+    --tone-plate: #202427;
+    --tone-ink: #eceded;
+    --tone-ink-2: #aeb3aa;
+    --tone-ink-3: #8a9085;
+    --tone-overlay-ink-3: #7c8178;
+    --tone-rule: rgba(236, 237, 231, 0.14);
+    --tone-rule-2: rgba(236, 237, 231, 0.4);
+    --tone-overlay-rule: rgba(236, 237, 231, 0.14);
+    --tone-hover: rgba(236, 237, 231, 0.08);
+    --tone-signal: #8fb3ff;
+    --tone-signal-hover: #b4ccff;
+    --tone-signal-weak: rgba(143, 179, 255, 0.12);
+    --tone-on-signal: #0e1a2e;
+    --tone-proof: #ff8468;
+    --tone-proof-weak: rgba(255, 132, 104, 0.12);
+  }
+}

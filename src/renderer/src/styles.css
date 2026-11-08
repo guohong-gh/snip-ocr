@@ -1,45 +1,32 @@
+@import '../../shared/designTokens.css';
+
 :root {
-  color-scheme: light dark;
   --board: #e8e9e4;
-  --paper: #f4f5f1;
-  --plate: #fbfcf8;
-  --ink: #181a17;
-  --ink-2: #565b54;
-  --ink-3: #666b63;
-  --rule: rgba(24, 26, 23, 0.14);
-  --rule-2: rgba(24, 26, 23, 0.42);
-  --hover: rgba(24, 26, 23, 0.06);
-  --signal: #2456b8;
-  --signal-hover: #1b4699;
-  --signal-weak: rgba(36, 86, 184, 0.1);
-  --on-signal: #ffffff;
-  --proof: #c33d26;
-  --proof-weak: rgba(195, 61, 38, 0.1);
+  --paper: var(--tone-paper);
+  --plate: var(--tone-plate);
+  --ink: var(--tone-ink);
+  --ink-2: var(--tone-ink-2);
+  --ink-3: var(--tone-ink-3);
+  --rule: var(--tone-rule);
+  --rule-2: var(--tone-rule-2);
+  --hover: var(--tone-hover);
+  --signal: var(--tone-signal);
+  --signal-hover: var(--tone-signal-hover);
+  --signal-weak: var(--tone-signal-weak);
+  --on-signal: var(--tone-on-signal);
+  --proof: var(--tone-proof);
+  --proof-weak: var(--tone-proof-weak);
   --ok: #2f6b4f;
   --warn: #9a6a1e;
   --danger: #b33a32;
-  --sans: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif;
-  --mono: 'Cascadia Mono', Consolas, ui-monospace, 'SFMono-Regular', monospace;
+  --sans: var(--font-sans);
+  --mono: var(--font-mono);
   font-family: var(--sans);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --board: #121416;
-    --paper: #191c1e;
-    --plate: #202427;
-    --ink: #eceded;
-    --ink-2: #aeb3aa;
-    --ink-3: #8a9085;
-    --rule: rgba(236, 237, 231, 0.14);
-    --rule-2: rgba(236, 237, 231, 0.4);
-    --hover: rgba(236, 237, 231, 0.08);
-    --signal: #8fb3ff;
-    --signal-hover: #b4ccff;
-    --signal-weak: rgba(143, 179, 255, 0.12);
-    --on-signal: #0e1a2e;
-    --proof: #ff8468;
-    --proof-weak: rgba(255, 132, 104, 0.12);
     --ok: #6fbf8f;
     --warn: #d6a34a;
     --danger: #e06a5f;

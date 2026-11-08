@@ -1,11 +1,11 @@
 import { app, type WebContents } from 'electron'
 import { TRANSLATE_DIRECTIONS, type TranslateDirection } from '@shared/ipc'
-import { parseOverlayConsoleMessage } from '@shared/overlayProtocol'
+import { OVERLAY_REPLY_CHANNELS, parseOverlayConsoleMessage } from '@shared/overlayProtocol'
 import { translate, translateStatus } from './translate'
 
 let registrations = 0
 
-/** 供自检验证：翻译桥只注册一次，避免同一请求被多份监听重复处理 */
+/** 仅供 testHooks 汇总给自检验证：翻译桥只注册一次，避免同一请求被多份监听重复处理 */
 export function overlayBridgeRegistrationCount(): number {
   return registrations
 }
@@ -18,7 +18,7 @@ export function registerOverlayTranslateBridge(): void {
     contents.on('console-message', (_event, _level, message) => {
       const parsed = parseOverlayConsoleMessage(message)
       if (parsed.kind === 'translate-status') {
-        contents.send('SCREENSHOTS:translate-status', translateStatus())
+        contents.send(OVERLAY_REPLY_CHANNELS.translateStatus, translateStatus())
         return
       }
       if (parsed.kind !== 'translate') return
@@ -38,7 +38,7 @@ export function registerOverlayTranslateBridge(): void {
         return
       }
       void translate(text, direction).then((result) => {
-        if (!contents.isDestroyed()) contents.send('SCREENSHOTS:translate-result', result)
+        if (!contents.isDestroyed()) contents.send(OVERLAY_REPLY_CHANNELS.translateResult, result)
       })
     })
   })

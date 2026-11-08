@@ -9,10 +9,16 @@ let pageReady = false
 let pendingSettings = false
 let quitting = false
 let hiddenHandler: (() => void) | null = null
+let shownHandler: (() => void) | null = null
 
 /** 主窗关闭到托盘后触发（首次提示挂在主进程） */
 export function setHomeHiddenHandler(handler: (() => void) | null): void {
   hiddenHandler = handler
+}
+
+/** 主窗显示或重新获得焦点时触发（快捷键冲突的立即重试挂在这里） */
+export function setHomeShownHandler(handler: (() => void) | null): void {
+  shownHandler = handler
 }
 
 function hideHome(win: BrowserWindow): void {
@@ -86,6 +92,8 @@ export function openMainWindow(options?: { showSettings?: boolean }): BrowserWin
     win.show()
     win.focus()
   })
+  win.on('show', () => shownHandler?.())
+  win.on('focus', () => shownHandler?.())
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.on('did-finish-load', () => {
     pageReady = false

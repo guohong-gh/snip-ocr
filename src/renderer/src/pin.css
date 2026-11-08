@@ -1,3 +1,5 @@
+@import '../../shared/designTokens.css';
+
 html,
 body,
 #root {
@@ -10,7 +12,7 @@ body,
 }
 
 body {
-  font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif;
+  font-family: var(--font-sans);
 }
 
 .pin-root {
@@ -132,9 +134,9 @@ body {
   gap: 8px;
   padding: 0 34px 0 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(20, 21, 23, 0.86);
-  color: #f2f2ec;
-  font-family: 'Cascadia Mono', Consolas, ui-monospace, monospace;
+  background: var(--tone-panel-scrim);
+  color: var(--tone-panel-inverse);
+  font-family: var(--font-mono);
   font-size: 9.5px;
   pointer-events: none;
   opacity: 0;
@@ -148,8 +150,8 @@ body {
 .pin-tag {
   padding: 1px 4px;
   border: 1px solid rgba(143, 179, 255, 0.4);
-  border-radius: 1px;
-  color: #8fb3ff;
+  border-radius: var(--radius-xs);
+  color: var(--tone-panel-bright);
   font-size: 8.5px;
   letter-spacing: 0.14em;
 }
@@ -164,7 +166,7 @@ body {
 
 .pin-zoom {
   margin-left: auto;
-  color: #f2f2ec;
+  color: var(--tone-panel-inverse);
   font-variant-numeric: tabular-nums;
 }
 
@@ -177,10 +179,10 @@ body {
   height: 20px;
   padding: 0;
   border: 0;
-  border-radius: 2px;
-  background: rgba(20, 21, 23, 0.82);
-  color: #f2f2ec;
-  font: 600 12px/1 'Cascadia Mono', Consolas, ui-monospace, monospace;
+  border-radius: var(--radius-sm);
+  background: var(--tone-panel-scrim-soft);
+  color: var(--tone-panel-inverse);
+  font: 600 12px/1 var(--font-mono);
   cursor: pointer;
   opacity: 0.55;
   transition:
@@ -193,7 +195,7 @@ body {
 }
 
 .pin-close:hover {
-  background: #c33d26;
+  background: var(--tone-panel-proof);
 }
 
 .pin-handle-ne::after,

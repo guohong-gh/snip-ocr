@@ -5,14 +5,17 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { app, nativeImage } from 'electron'
 import type { OcrLanguageInfo, OcrLanguagesResult, SetHotkeyResult } from '@shared/ipc'
-import { loadConfig } from './config'
+import { appState, broadcastState } from './appState'
+import { loadConfig, saveConfig } from './config'
+import { removeFileEventually } from './tempFiles'
 
 const execFileAsync = promisify(execFile)
 
 const OCR_TIMEOUT_MS = 15000
 const OCR_LANGUAGE_TIMEOUT_MS = 10000
-const REMOVE_RETRIES = 4
-const REMOVE_RETRY_DELAY_MS = 100
+/** OCR 脚本的结构化退出码：类型判定只看退出码与 stderr 标记，不匹配错误文案 */
+const OCR_EXIT_NO_LANGUAGE = 3
+const OCR_EXIT_FAILED = 2
 /** 超过该像素数视为整屏/大视野，原生字号已够大，放大只增加耗时 */
 const OCR_UPSCALE_MAX_PIXELS = 1_000_000
 /** 放大后最长边上限，避免触到 OcrEngine.MaxImageDimension */
@@ -372,8 +375,14 @@ try {
   } | ConvertTo-Json -Compress -Depth 6
   [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payload))
 } catch {
-  [Console]::Error.WriteLine($_.Exception.Message)
-  exit 1
+  $msg = $_.Exception.Message
+  if ($msg -eq 'NO_OCR_LANGUAGE') {
+    [Console]::Error.WriteLine('SNIP_OCR_ERROR:NO_LANGUAGE')
+    exit ${OCR_EXIT_NO_LANGUAGE}
+  }
+  [Console]::Error.WriteLine('SNIP_OCR_ERROR:GENERAL')
+  [Console]::Error.WriteLine($msg)
+  exit ${OCR_EXIT_FAILED}
 }
 `
 
@@ -491,6 +500,17 @@ export async function applyOcrLanguage(
   return { ok: true }
 }
 
+/** 默认存储：IPC 与界面选择的统一入口，校验逻辑仍在 applyOcrLanguage */
+export function setOcrLanguage(tag: unknown): Promise<SetHotkeyResult> {
+  return applyOcrLanguage(tag, {
+    save: (value) => saveConfig({ ocrLanguage: value }),
+    apply: (value) => {
+      appState.ocrLanguage = value
+    },
+    broadcast: () => broadcastState(),
+  })
+}
+
 export function buildOcrScript(imagePath: string, languageTag: string): string {
   return OCR_SCRIPT.replace(
     '__IMAGE_PATH_B64__',
@@ -530,20 +550,29 @@ function ocrTempDir(): string {
   return join(app.getPath('userData'), 'ocr')
 }
 
-const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+/** execFile 失败对象里与本函数相关的字段 */
+interface ExecFailure {
+  code?: number | string
+  killed?: boolean
+  stderr?: string
+  message?: string
+}
 
-async function removeFileEventually(filePath: string): Promise<void> {
-  for (let attempt = 0; attempt < REMOVE_RETRIES; attempt += 1) {
-    try {
-      await unlink(filePath)
-      return
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code === 'ENOENT') return
-      if (attempt === REMOVE_RETRIES - 1) return
-      await delay(REMOVE_RETRY_DELAY_MS)
-    }
-  }
+/** 把外部脚本失败翻译成用户可读错误：按退出码/stderr 标记分类，不依赖错误文案 */
+function ocrFailureReason(error: unknown): Error {
+  const details = error as ExecFailure
+  // execFile 超时会终止子进程，killed 是结构化信号，比匹配 "timed out" 文案可靠
+  if (details.killed) return new Error('OCR 识别超时')
+  if (details.code === OCR_EXIT_NO_LANGUAGE) return new Error('系统未安装可用的 OCR 语言包')
+  const stderr = typeof details.stderr === 'string' ? details.stderr : ''
+  const marker = stderr.split(/\r?\n/).find((line) => line.startsWith('SNIP_OCR_ERROR:'))
+  if (marker === 'SNIP_OCR_ERROR:NO_LANGUAGE') return new Error('系统未安装可用的 OCR 语言包')
+  const detail = stderr
+    .split(/\r?\n/)
+    .filter((line) => line && !line.startsWith('SNIP_OCR_ERROR:'))
+    .join(' ')
+    .trim()
+  return new Error(`OCR 识别失败：${detail || details.message || '未知错误'}`)
 }
 
 class OcrService {
@@ -650,14 +679,7 @@ class OcrService {
       const language = typeof parsed.language === 'string' ? parsed.language : ''
       return { lines, fallbackText, language }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (message.includes('NO_OCR_LANGUAGE')) {
-        throw new Error('系统未安装可用的 OCR 语言包')
-      }
-      if ((error as NodeJS.ErrnoException).code === 'ETIMEDOUT' || message.includes('timed out')) {
-        throw new Error('OCR 识别超时')
-      }
-      throw new Error(`OCR 识别失败：${message}`)
+      throw ocrFailureReason(error)
     } finally {
       await removeFileEventually(imagePath)
     }

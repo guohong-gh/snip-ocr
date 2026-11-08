@@ -1,5 +1,5 @@
 import { registerAppWindowIpc, type AppWindowIpcHandlers } from './appWindow'
-import { registerHistoryIpc, type HistoryIpcHandlers } from './history'
+import { registerHistoryIpc } from './history'
 import { registerOcrIpc } from './ocr'
 import { registerPinWindowIpc } from './pinWindow'
 import { registerSettingsIpc, type SettingsIpcHandlers } from './settings'
@@ -7,7 +7,6 @@ import { registerTranslateIpc } from './translate'
 
 export interface IpcRegistry {
   settings: SettingsIpcHandlers
-  history: HistoryIpcHandlers
   appWindow: AppWindowIpcHandlers
 }
 
@@ -17,7 +16,7 @@ const registered: string[] = []
 export function registerIpc(registry: IpcRegistry): void {
   registered.push(
     ...registerSettingsIpc(registry.settings),
-    ...registerHistoryIpc(registry.history),
+    ...registerHistoryIpc(),
     ...registerOcrIpc(),
     ...registerTranslateIpc(),
     ...registerPinWindowIpc(),
@@ -25,7 +24,7 @@ export function registerIpc(registry: IpcRegistry): void {
   )
 }
 
-/** 供自检验证每个入站通道恰好注册一次 */
+/** 仅供 testHooks 汇总给自检验证每个入站通道恰好注册一次 */
 export function registeredIpcChannels(): string[] {
   return [...registered]
 }

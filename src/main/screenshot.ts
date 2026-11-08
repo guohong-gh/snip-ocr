@@ -1,26 +1,22 @@
 import {
   app,
   clipboard,
-  globalShortcut,
-  nativeImage,
   Notification,
   type BrowserWindow,
   type WebContents,
 } from 'electron'
-import Screenshots, { type Bounds } from 'electron-screenshots'
+import Screenshots from 'electron-screenshots'
 import { join } from 'node:path'
 import { DEFAULT_HOTKEY, type IconTheme } from '@shared/ipc'
-import { ocrService } from './ocr'
-import { LongShotController } from './longShot'
-import {
-  captureOverlaySelection,
-  hideOverlaySidebar,
-  installOverlayUi,
-  updateOverlayTheme,
-} from './overlayUi'
+import { installOverlayUi, updateOverlayTheme } from './overlayUi'
+import { pinRequestResetScript } from './overlay/pinRequest'
 import { parseOverlayConsoleMessage } from '@shared/overlayProtocol'
-import { pinService } from './pin'
+import { hotkeyRegistry } from './hotkeyRegistry'
 import { recordPinHistory } from './pinHistory'
+import { createLongShotBridge } from './longShotBridge'
+import { emptySize, finishOk, sizeOf, type CaptureIpcData } from './captureOutcome'
+import { handleEscape } from './overlayInput'
+import { OverlayOcr, sendOcrResult } from './overlayOcr'
 
 /** 被屏蔽的标注按钮的 title 哨兵，配合 CSS 隐藏 */
 const DISABLED_TITLE = '__disabled__'
@@ -60,14 +56,8 @@ export interface CaptureOutcome {
 
 type OutcomeListener = (outcome: CaptureOutcome) => void
 
-interface CaptureIpcData {
-  bounds: Bounds
-  display: Bounds & { id: number; scaleFactor: number }
-}
-
 class ScreenshotService {
   private lib: Screenshots | null = null
-  private hotkey: string | null = null
   private capturing = false
   private listeners = new Set<OutcomeListener>()
   private beforeCaptureListeners = new Set<() => void>()
@@ -75,32 +65,33 @@ class ScreenshotService {
   private overlayInstalled = false
   private overlayReady: Promise<void> | null = null
   private overlayReadyResolve: (() => void) | null = null
-  private ocrRunning = false
   private disposed = false
   private theme: IconTheme = 'default'
   private customIconUrl: string | null = null
-  private readonly longShot = new LongShotController({
+  private readonly ocr = new OverlayOcr()
+  private readonly longShot = createLongShotBridge({
     view: () => this.view,
     overlayWindow: () => this.overlayWindow(),
     notify: (title, body) => this.notify(title, body),
     emitOutcome: (outcome) => this.emit(outcome),
-    emptySize: () => this.emptySize(),
+    emptySize,
     endCapture: () => this.stopCapture(),
     emitCaptureEnded: () => this.emitCaptureEnded(),
     isDisposed: () => this.disposed,
     setCapturing: (capturing) => {
       this.capturing = capturing
     },
-    sendOcrResult: (contents, payload) => this.sendOcrResult(contents, payload),
-    tryStartOcr: () => {
-      if (this.ocrRunning) return false
-      this.ocrRunning = true
-      return true
-    },
-    endOcr: () => {
-      this.ocrRunning = false
-    },
+    sendOcrResult,
+    tryStartOcr: () => this.ocr.tryStart(),
+    endOcr: () => this.ocr.end(),
   })
+
+  constructor() {
+    hotkeyRegistry.configure('capture', {
+      handler: () => void this.startCapture().catch(onShortcutError),
+      fallback: () => DEFAULT_HOTKEY,
+    })
+  }
 
   onOutcome(listener: OutcomeListener): () => void {
     this.listeners.add(listener)
@@ -124,10 +115,10 @@ class ScreenshotService {
   }
 
   get currentHotkey(): string | null {
-    return this.hotkey
+    return hotkeyRegistry.current('capture')
   }
 
-  /** 截图视图（仅用于自检脚本读取 DOM / 注入输入事件） */
+  /** 截图视图：长图控制与主题更新依赖；自检通过 testHooks 读取 */
   get view(): WebContents | null {
     return this.lib?.$view.webContents ?? null
   }
@@ -151,25 +142,6 @@ class ScreenshotService {
   private notify(title: string, body: string): void {
     if (!Notification.isSupported()) return
     new Notification({ title, body }).show()
-  }
-
-  private emptySize(): Pick<
-    CaptureOutcome,
-    'width' | 'height' | 'selectionWidth' | 'selectionHeight' | 'selectionX' | 'selectionY'
-  > {
-    return { width: 0, height: 0, selectionWidth: 0, selectionHeight: 0, selectionX: 0, selectionY: 0 }
-  }
-
-  private sizeOf(buffer: Buffer, data: CaptureIpcData): Pick<CaptureOutcome, 'width' | 'height' | 'selectionWidth' | 'selectionHeight' | 'selectionX' | 'selectionY'> {
-    const { width, height } = nativeImage.createFromBuffer(buffer).getSize()
-    return {
-      width,
-      height,
-      selectionWidth: Math.round(data.bounds.width),
-      selectionHeight: Math.round(data.bounds.height),
-      selectionX: Math.round(data.bounds.x),
-      selectionY: Math.round(data.bounds.y),
-    }
   }
 
   private ensureLib(): Screenshots {
@@ -212,13 +184,23 @@ class ScreenshotService {
     contents.on('before-input-event', (event, input) => {
       if (input.type !== 'keyDown' || input.key !== 'Escape') return
       event.preventDefault()
-      void this.handleEscape(lib, contents)
+      void handleEscape(lib, contents, {
+        isLongShotActive: () => this.longShot.isActive() || this.longShot.hasResult(),
+        closeLongShot: () => this.longShot.close(true),
+        emitCancelled: () => this.emit({ kind: 'cancelled', ...emptySize() }),
+        finalizeCapture: () => this.finalizeCapture(),
+      })
     })
 
     lib.on('ok', (event: LibraryEvent, buffer: Buffer, data: CaptureIpcData) => {
       // 接管默认行为：确定与双击复制都从同一份裁剪 buffer 出发
       event.preventDefault()
-      void this.finishOk(contents, buffer, data)
+      void finishOk(contents, buffer, data, {
+        stopCapture: () => this.stopCapture(),
+        finalizeCapture: () => this.finalizeCapture(),
+        emitOutcome: (outcome) => this.emit(outcome),
+        notify: (title, body) => this.notify(title, body),
+      })
     })
     lib.on('save', (event: LibraryEvent, buffer: Buffer, data: CaptureIpcData) => {
       if (this.longShot.isActive() || this.longShot.hasResult()) {
@@ -228,7 +210,7 @@ class ScreenshotService {
         return
       }
       // 不 preventDefault：库的默认行为会弹出系统保存对话框并写 PNG，收尾由窗口 hide 触发
-      const size = this.sizeOf(buffer, data)
+      const size = sizeOf(buffer, data)
       void recordPinHistory(buffer, size.width, size.height, 'save')
       this.emit({ kind: 'saved', ...size })
     })
@@ -238,7 +220,7 @@ class ScreenshotService {
         void this.longShot.close(true)
         return
       }
-      this.emit({ kind: 'cancelled', ...this.emptySize() })
+      this.emit({ kind: 'cancelled', ...emptySize() })
       if (wasCapturing) this.finalizeCapture()
       else this.emitCaptureEnded()
     })
@@ -286,7 +268,7 @@ class ScreenshotService {
             void this.longShot.close(true)
             return
           case 'ocr':
-            void this.runOcr(contents, parsed.requestId ?? Date.now())
+            void this.ocr.run(contents, parsed.requestId ?? Date.now())
             return
           default:
             return
@@ -294,115 +276,6 @@ class ScreenshotService {
       default:
         return
     }
-  }
-
-  private async runOcr(contents: WebContents, requestId: number): Promise<void> {
-    if (this.ocrRunning) return
-    this.ocrRunning = true
-    try {
-      const buffer = await captureOverlaySelection(contents)
-      if (!buffer) {
-        this.sendOcrResult(contents, { requestId, status: 'empty', text: '', language: '', error: '请先框选区域' })
-        return
-      }
-      const result = await ocrService.recognize(buffer)
-      if (!result.text) {
-        this.sendOcrResult(contents, { requestId, status: 'empty', text: '', language: '', error: '未识别到文字' })
-        return
-      }
-      this.sendOcrResult(contents, {
-        requestId,
-        status: 'ready',
-        text: result.text,
-        language: result.language,
-        error: null,
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      console.error('[snip] ocr failed:', error)
-      this.sendOcrResult(contents, { requestId, status: 'error', text: '', language: '', error: message })
-    } finally {
-      this.ocrRunning = false
-    }
-  }
-
-  private sendOcrResult(
-    contents: WebContents,
-    payload: {
-      requestId: number
-      status: 'ready' | 'empty' | 'error'
-      text: string
-      language: string
-      error: string | null
-    },
-  ): void {
-    if (contents.isDestroyed()) return
-    contents.send('SCREENSHOTS:ocr-result', payload)
-  }
-
-  private async handleEscape(lib: Screenshots, contents: WebContents): Promise<void> {
-    let sidebarOpen = false
-    try {
-      sidebarOpen = (await contents.executeJavaScript(
-        `Boolean(document.getElementById('snip-ocr-sidebar')?.classList.contains('show'))`,
-      )) as boolean
-    } catch {
-      sidebarOpen = false
-    }
-    if (sidebarOpen) {
-      await hideOverlaySidebar(contents).catch(() => undefined)
-      return
-    }
-    if (this.longShot.isActive() || this.longShot.hasResult()) {
-      // 长图态 Esc = 取消：不写剪贴板，下次从头开始
-      await this.longShot.close(true)
-      return
-    }
-    await lib.endCapture()
-    this.emit({ kind: 'cancelled', ...this.emptySize() })
-    this.finalizeCapture()
-  }
-
-  private async consumePinRequest(contents: WebContents): Promise<boolean> {
-    try {
-      const requested = (await contents.executeJavaScript(
-        'window.__snipPinRequest === true',
-      )) as unknown
-      if (requested === true) {
-        await contents.executeJavaScript('window.__snipPinRequest = false')
-      }
-      return requested === true
-    } catch {
-      return false
-    }
-  }
-
-  private async finishOk(contents: WebContents, buffer: Buffer, data: CaptureIpcData): Promise<void> {
-    const pinRequest = await this.consumePinRequest(contents)
-    const finalBuffer = buffer
-    const finalData = data
-    const size = this.sizeOf(finalBuffer, finalData)
-    if (pinRequest) {
-      // 先收起遮罩再贴图，避免两个窗口重叠闪烁
-      await this.stopCapture()
-      try {
-        await pinService.createPin({
-          buffer: finalBuffer,
-          bounds: finalData.bounds,
-          display: finalData.display,
-        })
-        this.emit({ kind: 'pinned', ...size })
-        this.finalizeCapture()
-        return
-      } catch (error) {
-        console.error('[snip] pin failed:', error)
-      }
-    }
-    clipboard.writeImage(nativeImage.createFromBuffer(finalBuffer))
-    void recordPinHistory(finalBuffer, size.width, size.height, 'copy')
-    this.emit({ kind: 'copied', ...size })
-    await this.stopCapture()
-    this.finalizeCapture()
   }
 
   /**
@@ -422,13 +295,13 @@ class ScreenshotService {
     for (const listener of this.beforeCaptureListeners) listener()
     this.capturing = true
     void lib.$view.webContents
-      .executeJavaScript('window.__snipPinRequest = false; window.__snipHideSidebar?.()')
+      .executeJavaScript(`${pinRequestResetScript()}; window.__snipHideSidebar?.()`)
       .catch(() => undefined)
     try {
       await lib.startCapture()
     } catch (error) {
       this.capturing = false
-      this.emit({ kind: 'cancelled', ...this.emptySize() })
+      this.emit({ kind: 'cancelled', ...emptySize() })
       this.emitCaptureEnded()
       throw error
     }
@@ -462,32 +335,14 @@ class ScreenshotService {
     if (!this.disposed) this.emitCaptureEnded()
   }
 
-  private register(accelerator: string): boolean {
-    try {
-      return globalShortcut.register(accelerator, () => void this.startCapture().catch(onShortcutError))
-    } catch {
-      return false
-    }
-  }
-
-  /** 注册（或替换）全局快捷键，失败时回滚到上一个可用值 */
+  /** 注册（或替换）全局快捷键；统一走 hotkeyRegistry 的注册/回滚语义 */
   setHotkey(accelerator: string): { ok: boolean; error?: string } {
-    const next = accelerator.trim() || DEFAULT_HOTKEY
-    if (this.hotkey === next) return { ok: true }
-    const previous = this.hotkey
-    if (previous) globalShortcut.unregister(previous)
-    if (!this.register(next)) {
-      const fallback = previous ?? DEFAULT_HOTKEY
-      this.hotkey = this.register(fallback) ? fallback : null
-      return { ok: false, error: `快捷键 ${next} 注册失败，可能已被其它应用占用` }
-    }
-    this.hotkey = next
-    return { ok: true }
+    return hotkeyRegistry.apply('capture', accelerator)
   }
 
   dispose(): void {
     this.disposed = true
-    globalShortcut.unregisterAll()
+    hotkeyRegistry.dispose()
   }
 }
 

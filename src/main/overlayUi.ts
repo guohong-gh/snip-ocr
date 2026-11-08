@@ -5,9 +5,15 @@ import {
   OVERLAY_ACTION_PREFIX,
   OVERLAY_COPY_PREFIX,
   OVERLAY_HUD_RECT_PREFIX,
+  OVERLAY_PIN_REQUEST_KEY,
+  OVERLAY_REPLY_NAMES,
   OVERLAY_TRANSLATE_PREFIX,
   OVERLAY_TRANSLATE_STATUS_PREFIX,
 } from '@shared/overlayProtocol'
+import designTokensCss from '@shared/designTokens.css?raw'
+import overlayCss from './overlay/overlay.css?raw'
+import { installCropSelection } from './overlay/cropSelection'
+import { installLongShotHud } from './overlay/longShotHud'
 
 const TOOL_ORDER: ToolKey[] = ['ocr', 'pin', 'save', 'longshot', 'cancel', 'confirm']
 
@@ -22,521 +28,6 @@ export function overlayIcons(theme: IconTheme, customIconUrl: string | null): Re
   }
 }
 
-const OVERLAY_CSS = `
-.screenshots-operations-buttons > .screenshots-button,
-.screenshots-operations-buttons > .screenshots-operations-divider {
-  display: none !important;
-}
-.screenshots-operations {
-  position: fixed !important;
-  left: -10000px !important;
-  top: -10000px !important;
-  opacity: 0 !important;
-  pointer-events: none !important;
-}
-#snip-toolbar,
-#snip-long-hud {
-  --snip-strip-ink: #181a17;
-  --snip-strip-muted: #181a17;
-  --snip-strip-hover: #eceded;
-  --snip-signal: #2456b8;
-  --snip-signal-ink: #ffffff;
-  --snip-proof: #c33d26;
-}
-#snip-toolbar {
-  position: fixed;
-  z-index: 2147483002;
-  display: none;
-  align-items: center;
-  gap: 2px;
-  padding: 4px;
-  border: 1px solid #d8dad2;
-  border-radius: 3px;
-  background: #ffffff;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
-}
-.screenshots-canvas-border-top,
-.screenshots-canvas-border-right,
-.screenshots-canvas-border-bottom,
-.screenshots-canvas-border-left,
-.screenshots-canvas-point-top,
-.screenshots-canvas-point-top-right,
-.screenshots-canvas-point-right,
-.screenshots-canvas-point-right-bottom,
-.screenshots-canvas-point-bottom,
-.screenshots-canvas-point-bottom-left,
-.screenshots-canvas-point-left,
-.screenshots-canvas-point-left-top {
-  background-color: #4f7cff !important;
-}
-.screenshots-canvas-size {
-  display: none !important;
-}
-#snip-size-badge {
-  position: fixed;
-  z-index: 2147483001;
-  display: none;
-  padding: 4px 7px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 2px;
-  background: rgba(20, 21, 23, 0.9);
-  color: #f2f2ec;
-  font-family: 'Cascadia Mono', Consolas, ui-monospace, monospace;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.2;
-  white-space: nowrap;
-  pointer-events: none;
-  transform: translateX(-50%);
-}
-#snip-live-frame {
-  position: fixed;
-  z-index: 2147483000;
-  display: none;
-  overflow: hidden;
-  box-sizing: border-box;
-  border: 1px solid #4f7cff;
-  pointer-events: none;
-}
-#snip-live-image {
-  position: absolute;
-  display: block;
-  max-width: none;
-  max-height: none;
-  pointer-events: none;
-  user-select: none;
-}
-body.snip-live-drag [class^='screenshots-canvas-border'],
-body.snip-live-drag [class^='screenshots-canvas-point'] {
-  opacity: 0 !important;
-}
-body.snip-live-drag .screenshots-canvas-body {
-  opacity: 0 !important;
-}
-body.snip-live-drag .screenshots-canvas {
-  background: transparent !important;
-}
-.screenshots-operations-buttons {
-  display: flex !important;
-  align-items: center !important;
-  gap: 2px !important;
-  padding: 4px !important;
-  overflow: visible !important;
-}
-.snip-tool-btn {
-  position: relative;
-  display: flex;
-  width: 62px;
-  height: 54px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 2px;
-  background: transparent;
-  color: var(--snip-strip-ink);
-  font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif;
-  cursor: pointer;
-  transition:
-    background 140ms ease-out,
-    border-color 140ms ease-out,
-    color 140ms ease-out;
-}
-.snip-tool-btn:hover {
-  background: var(--snip-strip-hover);
-}
-.snip-tool-btn:focus-visible {
-  outline: 2px solid var(--snip-signal);
-  outline-offset: -2px;
-}
-.snip-tool-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-.snip-tool-btn .snip-tool-icon {
-  display: flex;
-  width: 20px;
-  height: 20px;
-  align-items: center;
-  justify-content: center;
-}
-.snip-tool-btn .snip-tool-icon svg,
-.snip-tool-btn .snip-tool-icon img {
-  display: block;
-  width: 20px;
-  height: 20px;
-  object-fit: contain;
-}
-.snip-tool-btn .snip-tool-label {
-  color: var(--snip-strip-muted);
-  font-size: 10px;
-  line-height: 1;
-  letter-spacing: 0.02em;
-}
-.snip-tool-btn:hover .snip-tool-label {
-  color: var(--snip-strip-ink);
-}
-.snip-tool-btn[data-snip-tool="pin"]:hover,
-.snip-tool-btn[data-snip-tool="ocr"]:hover {
-  border-color: #2456b8;
-  background: #2456b8;
-  color: #ffffff;
-}
-.snip-tool-btn[data-snip-tool="pin"]:hover .snip-tool-label,
-.snip-tool-btn[data-snip-tool="ocr"]:hover .snip-tool-label {
-  color: #ffffff;
-}
-.snip-tool-btn[data-snip-tool="save"]:hover {
-  border-color: #181a17;
-  background: #181a17;
-  color: #ffffff;
-}
-.snip-tool-btn[data-snip-tool="save"]:hover .snip-tool-label {
-  color: #ffffff;
-}
-.snip-tool-btn[data-snip-tool="confirm"]:hover {
-  border-color: #2f6b4f;
-  background: #2f6b4f;
-  color: #ffffff;
-}
-.snip-tool-btn[data-snip-tool="confirm"]:hover .snip-tool-label {
-  color: #ffffff;
-}
-.snip-tool-btn[data-snip-tool="cancel"]:hover {
-  border-color: #c33d26;
-  background: #c33d26;
-  color: #ffffff;
-}
-.snip-tool-btn[data-snip-tool="cancel"]:hover .snip-tool-label {
-  color: #ffffff;
-}
-.snip-tool-btn[data-snip-tool="pin"]:hover .snip-tool-icon img,
-.snip-tool-btn[data-snip-tool="ocr"]:hover .snip-tool-icon img,
-.snip-tool-btn[data-snip-tool="save"]:hover .snip-tool-icon img,
-.snip-tool-btn[data-snip-tool="confirm"]:hover .snip-tool-icon img,
-.snip-tool-btn[data-snip-tool="cancel"]:hover .snip-tool-icon img {
-  filter: brightness(0) invert(1);
-}
-#snip-ocr-sidebar {
-  --snip-paper: #f4f5f1;
-  --snip-plate: #fbfcf8;
-  --snip-ink: #181a17;
-  --snip-ink-2: #565b54;
-  --snip-ink-3: #8a8f86;
-  --snip-rule: rgba(24, 26, 23, 0.16);
-  --snip-rule-2: rgba(24, 26, 23, 0.42);
-  --snip-signal: #2456b8;
-  --snip-signal-ink: #ffffff;
-  --snip-proof: #c33d26;
-  position: fixed;
-  right: 24px;
-  top: 50%;
-  display: flex;
-  width: 340px;
-  max-height: 70vh;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--snip-rule-2);
-  border-radius: 3px;
-  background: var(--snip-paper);
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.24);
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(-50%) translateX(16px);
-  transition:
-    opacity 160ms ease-out,
-    transform 160ms ease-out;
-  user-select: text;
-  /* 高于选区边框与预览窗，避免被遮住 */
-  z-index: 2147483006;
-  font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif;
-}
-#snip-ocr-sidebar.dragging {
-  transition: none;
-}
-#snip-ocr-sidebar.show {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(-50%) translateX(0);
-}
-.snip-sidebar-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 11px 12px 10px;
-  border-bottom: 1px solid var(--snip-rule);
-  background: var(--snip-plate);
-  cursor: grab;
-  touch-action: none;
-  user-select: none;
-}
-#snip-ocr-sidebar.dragging .snip-sidebar-head {
-  cursor: grabbing;
-}
-.snip-sidebar-title {
-  color: var(--snip-ink);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-.snip-sidebar-lang {
-  margin-left: 7px;
-  padding: 1px 4px;
-  border: 1px solid var(--snip-rule);
-  border-radius: 1px;
-  color: var(--snip-ink-3);
-  font-family: 'Cascadia Mono', Consolas, ui-monospace, monospace;
-  font-size: 8.5px;
-  font-weight: 400;
-  letter-spacing: 0.04em;
-}
-.snip-sidebar-close {
-  display: grid;
-  width: 24px;
-  height: 24px;
-  place-items: center;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 2px;
-  background: transparent;
-  color: var(--snip-ink-2);
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-}
-.snip-sidebar-close:hover {
-  border-color: var(--snip-rule);
-  color: var(--snip-proof);
-}
-.snip-sidebar-close:focus-visible,
-.snip-sidebar-copy:focus-visible {
-  outline: 2px solid var(--snip-signal);
-  outline-offset: 2px;
-}
-.snip-sidebar-text {
-  width: 100%;
-  min-height: 180px;
-  flex: 1;
-  padding: 13px 14px;
-  border: 0;
-  outline: none;
-  resize: none;
-  background: var(--snip-paper);
-  color: var(--snip-ink);
-  font-family: inherit;
-  font-size: 13px;
-  line-height: 1.75;
-  user-select: text;
-}
-.snip-sidebar-text::placeholder {
-  color: var(--snip-ink-3);
-}
-.snip-sidebar-text::selection {
-  background: rgba(36, 86, 184, 0.16);
-}
-.snip-sidebar-status {
-  min-height: 17px;
-  padding: 0 14px 9px;
-  color: var(--snip-ink-3);
-  font-size: 10.5px;
-  line-height: 1.5;
-}
-.snip-sidebar-status.error {
-  color: var(--snip-proof);
-}
-.snip-sidebar-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px 12px;
-  border-top: 1px solid var(--snip-rule);
-  background: var(--snip-plate);
-}
-.snip-sidebar-count {
-  color: var(--snip-ink-2);
-  font-family: 'Cascadia Mono', Consolas, ui-monospace, monospace;
-  font-size: 9.5px;
-  font-variant-numeric: tabular-nums;
-}
-.snip-sidebar-copy {
-  height: 28px;
-  padding: 0 14px;
-  border: 1px solid var(--snip-signal);
-  border-radius: 2px;
-  background: var(--snip-signal);
-  color: var(--snip-signal-ink);
-  font-family: inherit;
-  font-size: 11px;
-  cursor: pointer;
-  transition:
-    background 140ms ease-out,
-    border-color 140ms ease-out;
-}
-.snip-sidebar-copy:hover:not(:disabled) {
-  border-color: #1b4699;
-  background: #1b4699;
-}
-.snip-sidebar-copy:disabled {
-  border-color: var(--snip-rule-2);
-  background: transparent;
-  color: var(--snip-ink-3);
-  cursor: not-allowed;
-}
-.snip-sidebar-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.snip-sidebar-translate {
-  height: 28px;
-  padding: 0 12px;
-  border: 1px solid var(--snip-rule-2);
-  border-radius: 2px;
-  background: transparent;
-  color: var(--snip-ink-2);
-  font-family: inherit;
-  font-size: 11px;
-  cursor: pointer;
-  transition:
-    border-color 140ms ease-out,
-    color 140ms ease-out;
-}
-.snip-sidebar-translate:hover:not(:disabled) {
-  border-color: var(--snip-signal);
-  color: var(--snip-signal);
-}
-.snip-sidebar-translate:disabled {
-  color: var(--snip-ink-3);
-  cursor: not-allowed;
-}
-.snip-sidebar-translate:focus-visible {
-  outline: 2px solid var(--snip-signal);
-  outline-offset: 2px;
-}
-.snip-sidebar-translation {
-  min-height: 0;
-  max-height: 30vh;
-  overflow: auto;
-  padding: 10px 14px;
-  border-top: 1px dashed var(--snip-rule);
-  background: var(--snip-plate);
-  color: var(--snip-ink);
-  font-size: 12.5px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-break: break-word;
-  user-select: text;
-}
-.snip-sidebar-translation[hidden] {
-  display: none;
-}
-@media (prefers-color-scheme: dark) {
-  #snip-ocr-sidebar {
-    --snip-paper: #191c1e;
-    --snip-plate: #202427;
-    --snip-ink: #eceded;
-    --snip-ink-2: #aeb3aa;
-    --snip-ink-3: #7c8178;
-    --snip-rule: rgba(236, 237, 231, 0.14);
-    --snip-rule-2: rgba(236, 237, 231, 0.4);
-    --snip-signal: #8fb3ff;
-    --snip-signal-ink: #0e1a2e;
-    --snip-proof: #ff8468;
-  }
-  .snip-sidebar-copy:hover:not(:disabled) {
-    border-color: #b4ccff;
-    background: #b4ccff;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    transition-duration: 0.01ms !important;
-  }
-}
-body.snip-long,
-body.snip-long #root {
-  background: transparent !important;
-}
-body.snip-long .screenshots-background-image,
-body.snip-long .screenshots-background-mask,
-body.snip-long #snip-toolbar,
-body.snip-long #snip-size-badge,
-body.snip-long #snip-live-frame,
-body.snip-long .screenshots-operations,
-body.snip-long [class^='screenshots-canvas-border'],
-body.snip-long [class^='screenshots-canvas-point'] {
-  display: none !important;
-}
-body.snip-long .screenshots-canvas {
-  border: 0 !important;
-  background: transparent !important;
-}
-/* 长图跟随态：选区内部透出真实屏幕，冻结图只保留在 DOM 里作为数据源 */
-body.snip-long .screenshots-canvas-image {
-  visibility: hidden !important;
-}
-#snip-long-border {
-  position: fixed;
-  z-index: 2147483004;
-  display: none;
-  box-sizing: border-box;
-  border: 2px solid #4f7cff;
-  border-radius: 2px;
-  pointer-events: none;
-}
-#snip-long-preview {
-  position: fixed;
-  z-index: 2147483003;
-  display: none;
-  box-sizing: border-box;
-  padding: 4px;
-  border: 1px solid #d8dad2;
-  border-radius: 3px;
-  background: #ffffff;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
-  pointer-events: none;
-}
-#snip-long-preview canvas {
-  display: block;
-  pointer-events: none;
-}
-#snip-long-hud {
-  position: fixed;
-  z-index: 2147483005;
-  display: none;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 4px 4px 10px;
-  border: 1px solid #d8dad2;
-  border-radius: 3px;
-  background: #ffffff;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
-  color: #181a17;
-  font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif;
-  font-size: 11px;
-  white-space: nowrap;
-}
-#snip-long-hud .snip-hud-text {
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.01em;
-}
-#snip-long-hud .snip-hud-hint {
-  color: #8a8f86;
-  font-size: 10px;
-}
-#snip-long-hud .snip-hud-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #2f6b4f;
-}
-`
 
 function buildScript(icons: Record<ToolKey, string>): string {
   return `
@@ -550,19 +41,13 @@ function buildScript(icons: Record<ToolKey, string>): string {
   const TRANSLATE_PREFIX = ${JSON.stringify(OVERLAY_TRANSLATE_PREFIX)};
   const TRANSLATE_STATUS_PREFIX = ${JSON.stringify(OVERLAY_TRANSLATE_STATUS_PREFIX)};
   const HUD_PREFIX = ${JSON.stringify(OVERLAY_HUD_RECT_PREFIX)};
+  const PIN_REQUEST_KEY = ${JSON.stringify(OVERLAY_PIN_REQUEST_KEY)};
+  const REPLY_NAMES = ${JSON.stringify(OVERLAY_REPLY_NAMES)};
 
   if (!window.__snipOverlayInstalled) {
     window.__snipOverlayInstalled = true;
     window.__snipCaptureSeq = 0;
     installSidebar();
-    window.addEventListener('keydown', (event) => {
-      if (event.key !== 'Escape') return;
-      const bar = document.getElementById('snip-ocr-sidebar');
-      if (!bar || !bar.classList.contains('show')) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      hideSidebar();
-    }, true);
     if (window.screenshots && typeof window.screenshots.on === 'function') {
       // 库的 reset ack 在 rAF 里发送；遮罩隐藏时 rAF 会被节流，主进程会白等 500ms。
       // 这里收到 reset 立即回 ack，React 自己的 reset 仍照常执行。
@@ -577,9 +62,9 @@ function buildScript(icons: Record<ToolKey, string>): string {
         window.__snipCaptureSeq = (window.__snipCaptureSeq || 0) + 1;
         setLongShotCount(0);
       });
-      window.screenshots.on('ocr-result', (payload) => applyOcrResult(payload));
-      window.screenshots.on('translate-status', (payload) => applyTranslateStatus(payload));
-      window.screenshots.on('translate-result', (payload) => applyTranslateResult(payload));
+      window.screenshots.on(REPLY_NAMES.ocrResult, (payload) => applyOcrResult(payload));
+      window.screenshots.on(REPLY_NAMES.translateStatus, (payload) => applyTranslateStatus(payload));
+      window.screenshots.on(REPLY_NAMES.translateResult, (payload) => applyTranslateResult(payload));
       requestTranslateStatus();
     }
   }
@@ -915,7 +400,7 @@ function buildScript(icons: Record<ToolKey, string>): string {
     if (key === 'pin') {
       const button = findLibraryButton('复制到剪贴板');
       if (!button) return;
-      window.__snipPinRequest = true;
+      window[PIN_REQUEST_KEY] = true;
       button.click();
       return;
     }
@@ -1135,18 +620,7 @@ function buildScript(icons: Record<ToolKey, string>): string {
     if (panel && panel.classList.contains('show')) positionSidebar();
   }
 
-  let longBounds = null;
-  let longState = null;
-  let longBorder = null;
-  let longHud = null;
-  let longPreview = null;
-  let longPreviewCanvas = null;
-  let longPreviewRows = 0;
-  let longFrameCanvas = null;
-  const PREVIEW_DIP = 180;
-  const PREVIEW_GAP = 10;
   let rectRaf = 0;
-
   function scheduleReportRects() {
     if (rectRaf) return;
     rectRaf = requestAnimationFrame(() => {
@@ -1154,6 +628,18 @@ function buildScript(icons: Record<ToolKey, string>): string {
       reportRects();
     });
   }
+  const LONG = (${installLongShotHud.toString()})({
+    actionPrefix: ACTION_PREFIX,
+    icons: () => ICONS,
+    reportRects: () => scheduleReportRects(),
+    hideSidebar: () => hideSidebar(),
+    isOcrBusy: () => ocrBusy,
+    beginLongOcr: () => {
+      discardOcr = false;
+      setOcrBusy(true);
+      showSidebar('OCR 识别结果', '正在识别长截图…', 'loading');
+    },
+  });
   function reportRects() {
     const toRect = (element) => {
       if (!element || element.style.display === 'none') return null;
@@ -1168,252 +654,10 @@ function buildScript(icons: Record<ToolKey, string>): string {
     };
     const bar = sidebar();
     console.log(HUD_PREFIX + JSON.stringify({
-      hud: toRect(longHud),
+      hud: toRect(LONG.hudElement()),
       sidebar: bar && bar.classList.contains('show') ? toRect(bar) : null
     }));
   }
-  function ensureLongNodes() {
-    if (!longBorder) {
-      longBorder = document.createElement('div');
-      longBorder.id = 'snip-long-border';
-      document.body.appendChild(longBorder);
-    }
-    if (!longHud) {
-      longHud = document.createElement('div');
-      longHud.id = 'snip-long-hud';
-      longHud.addEventListener('click', (event) => {
-        const target = event.target;
-        const button = target instanceof Element ? target.closest('[data-snip-long]') : null;
-        if (!button) return;
-        event.preventDefault();
-        event.stopPropagation();
-        const action = button.getAttribute('data-snip-long');
-        if (action === 'longshot-ocr') {
-          if (ocrBusy) return;
-          discardOcr = false;
-          setOcrBusy(true);
-          showSidebar('OCR 识别结果', '正在识别长截图…', 'loading');
-        }
-        console.log(ACTION_PREFIX + JSON.stringify({ action: action, requestId: Date.now() }));
-      });
-      document.body.appendChild(longHud);
-    }
-  }
-  function ensureLongPreview() {
-    if (!longPreview) {
-      longPreview = document.createElement('div');
-      longPreview.id = 'snip-long-preview';
-      longPreviewCanvas = document.createElement('canvas');
-      longPreview.appendChild(longPreviewCanvas);
-      document.body.appendChild(longPreview);
-    }
-    return longPreview;
-  }
-  function previewOverlap(rect) {
-    const b = longBounds;
-    if (!b) return true;
-    return rect.x < b.x + b.width && rect.x + rect.width > b.x && rect.y < b.y + b.height && rect.y + rect.height > b.y;
-  }
-  function positionLongPreview() {
-    if (!longPreview || !longPreviewCanvas || !longPreviewCanvas.width || longPreviewRows < 1 || !longBounds) {
-      if (longPreview) longPreview.style.display = 'none';
-      return;
-    }
-    const viewW = window.innerWidth;
-    const viewH = window.innerHeight;
-    const maxHeight = Math.floor(viewH * 0.6);
-    const ratio = longPreviewCanvas.height / longPreviewCanvas.width;
-    const b = longBounds;
-    const gap = PREVIEW_GAP;
-    const candidates = [
-      { side: 'right', x: b.x + b.width + gap, y: b.y, availW: viewW - (b.x + b.width) - gap * 2, availH: viewH },
-      { side: 'left', x: b.x - gap, y: b.y, availW: b.x - gap * 2, availH: viewH },
-      { side: 'bottom', x: b.x, y: b.y + b.height + gap, availW: viewW, availH: viewH - (b.y + b.height) - gap * 2 },
-      { side: 'top', x: b.x, y: b.y - gap, availW: viewW, availH: b.y - gap * 2 }
-    ];
-    let chosen = null;
-    for (const candidate of candidates) {
-      if (candidate.availW < 80 || candidate.availH < 60) continue;
-      let width = Math.min(PREVIEW_DIP, candidate.availW);
-      let height = Math.min(maxHeight, Math.round(width * ratio), candidate.availH);
-      width = Math.round(height / ratio);
-      if (width < 80) continue;
-      let x = candidate.side === 'right' ? candidate.x : candidate.side === 'left' ? b.x - gap - width : b.x;
-      let y = candidate.side === 'bottom' ? candidate.y : candidate.side === 'top' ? b.y - gap - height : b.y;
-      x = Math.max(8, Math.min(Math.round(x), viewW - width - 8));
-      y = Math.max(8, Math.min(Math.round(y), viewH - height - 8));
-      const rect = { x: x, y: y, width: width, height: height };
-      if (!previewOverlap(rect)) {
-        chosen = rect;
-        break;
-      }
-    }
-    if (!chosen) {
-      // 选区几乎铺满屏幕：取空间最大的一侧缩小到刚好不压选区
-      const width = Math.min(PREVIEW_DIP, Math.max(60, Math.max(b.x - gap * 2, viewW - (b.x + b.width) - gap * 2)));
-      const height = Math.max(40, Math.min(maxHeight, Math.round(width * ratio)));
-      chosen = { x: b.x + b.width + gap, y: Math.max(8, Math.min(b.y, viewH - height - 8)), width: width, height: height };
-    }
-    longPreview.style.display = 'block';
-    longPreview.style.left = chosen.x + 'px';
-    longPreview.style.top = chosen.y + 'px';
-    longPreviewCanvas.style.width = chosen.width + 'px';
-    longPreviewCanvas.style.height = chosen.height + 'px';
-  }
-  window.__snipLongFrame = (payload) => new Promise((resolve) => {
-    if (!payload || typeof payload !== 'object' || typeof payload.dataUrl !== 'string') {
-      resolve(null);
-      return;
-    }
-    const img = new Image();
-    img.onload = () => {
-      const bounds = payload.bounds || {};
-      const crop = payload.crop || {};
-      const dpr = window.devicePixelRatio || 1;
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(bounds.width * dpr));
-      canvas.height = Math.max(1, Math.round(bounds.height * dpr));
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        resolve(null);
-        return;
-      }
-      const rx = img.naturalWidth / (crop.width || 1);
-      const ry = img.naturalHeight / (crop.height || 1);
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'low';
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, bounds.width, bounds.height);
-      ctx.drawImage(
-        img,
-        (bounds.x - crop.x) * rx,
-        (bounds.y - crop.y) * ry,
-        bounds.width * rx,
-        bounds.height * ry,
-        0,
-        0,
-        bounds.width,
-        bounds.height
-      );
-      longFrameCanvas = canvas;
-      resolve(canvas.toDataURL('image/png'));
-    };
-    img.onerror = () => resolve(null);
-    img.src = payload.dataUrl;
-  });
-  window.__snipLongAppend = (startRow) => {
-    const frame = longFrameCanvas;
-    if (!frame || !frame.width || !frame.height) return null;
-    const dpr = window.devicePixelRatio || 1;
-    const targetW = Math.max(1, Math.round(PREVIEW_DIP * dpr));
-    const scale = targetW / frame.width;
-    const skip = Math.max(0, Math.min(frame.height, Math.round(Number(startRow) || 0)));
-    const rows = frame.height - skip;
-    if (rows < 1) return { rows: longPreviewRows, width: 0, height: 0 };
-    ensureLongPreview();
-    let previous = null;
-    if (longPreviewCanvas.width && longPreviewCanvas.height) {
-      previous = document.createElement('canvas');
-      previous.width = longPreviewCanvas.width;
-      previous.height = longPreviewCanvas.height;
-      const prevCtx = previous.getContext('2d');
-      if (prevCtx) prevCtx.drawImage(longPreviewCanvas, 0, 0);
-    }
-    const baseRows = longPreviewRows;
-    longPreviewRows += rows;
-    longPreviewCanvas.width = targetW;
-    longPreviewCanvas.height = Math.max(1, Math.round(longPreviewRows * scale));
-    const ctx = longPreviewCanvas.getContext('2d');
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    if (previous) ctx.drawImage(previous, 0, 0);
-    ctx.drawImage(frame, 0, skip, frame.width, rows, 0, Math.round(baseRows * scale), targetW, Math.round(rows * scale));
-    positionLongPreview();
-    return { rows: longPreviewRows, width: longPreviewCanvas.width, height: longPreviewCanvas.height };
-  };
-  function longHudButton(tool, action, label) {
-    return '<button type="button" class="snip-tool-btn" data-snip-tool="' + tool + '" data-snip-long="' + action + '">'
-      + '<span class="snip-tool-icon">' + (ICONS[tool] || '') + '</span>'
-      + '<span class="snip-tool-label">' + label + '</span>'
-      + '</button>';
-  }
-  function renderLongHud() {
-    ensureLongNodes();
-    const bounds = longBounds || { x: 0, y: 0, width: 0, height: 0 };
-    longBorder.style.display = 'block';
-    longBorder.style.left = Math.round(bounds.x - 2) + 'px';
-    longBorder.style.top = Math.round(bounds.y - 2) + 'px';
-    longBorder.style.width = Math.round(bounds.width + 4) + 'px';
-    longBorder.style.height = Math.round(bounds.height + 4) + 'px';
-    const state = longState || { phase: 'follow', count: 1 };
-    let html;
-    if (state.phase === 'done') {
-      const size = (state.width || 0) + ' × ' + (state.height || 0);
-      html = '<span class="snip-hud-text">已完成 · ' + size + (state.segments > 1 ? ' · ' + state.segments + ' 段' : '') + '</span>'
-        + longHudButton('confirm', 'longshot-copy', '复制')
-        + longHudButton('save', 'longshot-save', '另存')
-        + longHudButton('ocr', 'longshot-ocr', 'OCR')
-        + longHudButton('cancel', 'longshot-close', '关闭');
-    } else {
-      const hint = state.scrolling ? '采集中…' : '滚动页面，到底自动结束';
-      const height = state.height ? ' · ' + state.height + ' px' : '';
-      html = '<span class="snip-hud-dot"></span>'
-        + '<span class="snip-hud-text">长截图 · 第 ' + (state.count || 1) + ' 段' + height + '</span>'
-        + '<span class="snip-hud-hint">' + hint + '</span>'
-        + longHudButton('confirm', 'longshot-finish', '完成')
-        + longHudButton('cancel', 'longshot-cancel', '取消');
-    }
-    longHud.innerHTML = html;
-    longHud.style.display = 'flex';
-    const hudWidth = longHud.offsetWidth;
-    const hudHeight = longHud.offsetHeight;
-    let left = Math.round(bounds.x + bounds.width - hudWidth);
-    let top = Math.round(bounds.y - hudHeight - 10);
-    if (top < 8) top = Math.round(bounds.y + bounds.height + 10);
-    // HUD 变高后可能两端都放不下，最后统一夹回视口内，避免跑出屏幕
-    top = Math.max(8, Math.min(top, window.innerHeight - hudHeight - 8));
-    left = Math.max(8, Math.min(left, window.innerWidth - hudWidth - 8));
-    longHud.style.left = left + 'px';
-    longHud.style.top = top + 'px';
-    positionLongPreview();
-    scheduleReportRects();
-  }
-
-  window.__snipLongStart = (bounds) => {
-    if (!bounds || typeof bounds !== 'object') return;
-    longBounds = bounds;
-    longState = { phase: 'follow', count: 1, scrolling: false };
-    longPreviewRows = 0;
-    longFrameCanvas = null;
-    if (longPreviewCanvas) {
-      longPreviewCanvas.width = 0;
-      longPreviewCanvas.height = 0;
-    }
-    if (longPreview) longPreview.style.display = 'none';
-    hideSidebar();
-    document.body.classList.add('snip-long');
-    renderLongHud();
-  };
-  window.__snipLongState = (state) => {
-    if (!state || typeof state !== 'object') return;
-    longState = Object.assign({}, longState || {}, state);
-    renderLongHud();
-  };
-  window.__snipLongEnd = () => {
-    longBounds = null;
-    longState = null;
-    longPreviewRows = 0;
-    longFrameCanvas = null;
-    document.body.classList.remove('snip-long');
-    if (longBorder) longBorder.style.display = 'none';
-    if (longHud) longHud.style.display = 'none';
-    if (longPreview) longPreview.style.display = 'none';
-    if (longPreviewCanvas) {
-      longPreviewCanvas.width = 0;
-      longPreviewCanvas.height = 0;
-    }
-    scheduleReportRects();
-  };
 
   window.__snipSetTheme = (icons) => {
     if (!icons || typeof icons !== 'object') return;
@@ -1427,28 +671,7 @@ function buildScript(icons: Record<ToolKey, string>): string {
   };
   window.__snipHideSidebar = hideSidebar;
   window.__snipSetLongShot = setLongShotCount;
-  window.__snipCropSelection = () => {
-    const image = document.querySelector('.screenshots-background-image');
-    const canvas = document.querySelector('.screenshots-canvas');
-    if (!image || !canvas) return null;
-    const bg = image.getBoundingClientRect();
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width < 2 || rect.height < 2 || bg.width < 1 || bg.height < 1) return null;
-    const scaleX = image.naturalWidth / bg.width;
-    const scaleY = image.naturalHeight / bg.height;
-    const sx = Math.max(0, Math.round((rect.left - bg.left) * scaleX));
-    const sy = Math.max(0, Math.round((rect.top - bg.top) * scaleY));
-    const sw = Math.min(image.naturalWidth - sx, Math.round(rect.width * scaleX));
-    const sh = Math.min(image.naturalHeight - sy, Math.round(rect.height * scaleY));
-    if (sw < 1 || sh < 1) return null;
-    const output = document.createElement('canvas');
-    output.width = sw;
-    output.height = sh;
-    const ctx = output.getContext('2d');
-    if (!ctx) return null;
-    ctx.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh);
-    return output.toDataURL('image/png');
-  };
+  (${installCropSelection.toString()})();
   const schedule = () => {
     if (window.__snipOverlayRaf) return;
     window.__snipOverlayRaf = requestAnimationFrame(() => {
@@ -1544,7 +767,7 @@ export async function installOverlayUi(
   theme: IconTheme,
   customIconUrl: string | null,
 ): Promise<void> {
-  await contents.insertCSS(OVERLAY_CSS)
+  await contents.insertCSS(`${designTokensCss}\n${overlayCss}`)
   await contents.executeJavaScript(buildScript(overlayIcons(theme, customIconUrl)))
 }
 

@@ -1,6 +1,6 @@
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
 import type {
@@ -9,6 +9,7 @@ import type {
   TranslateResult,
   TranslateStatus,
 } from '@shared/ipc'
+import { removeFileEventually } from './tempFiles'
 
 const PLUGIN_DIR_NAME = 'translate-locally'
 const EXE_NAME = 'translateLocally.exe'
@@ -103,6 +104,22 @@ interface RunOutcome {
   error?: string
 }
 
+/** 超时结束整个进程树：翻译引擎可能拉起子进程，只 kill 父进程会留下残留 */
+function killProcessTree(child: ChildProcess): void {
+  if (process.platform === 'win32' && child.pid) {
+    try {
+      execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      })
+      return
+    } catch {
+      // 进程已退出时 taskkill 返回非 0，继续走普通 kill 兜底
+    }
+  }
+  child.kill()
+}
+
 /** 一次性进程：翻译由用户手动触发，冷热启动只差几十毫秒，常驻反而要管理 idle/崩溃/残留 */
 function runEngine(
   dir: string,
@@ -125,20 +142,12 @@ function runEngine(
       resolve(outcome)
     }
     timer = setTimeout(() => {
-      child.kill()
+      killProcessTree(child)
       finish({ code: null, timedOut: true })
     }, TIMEOUT_MS)
     child.on('error', (error) => finish({ code: null, timedOut: false, error: error.message }))
     child.on('close', (code) => finish({ code, timedOut: false }))
   })
-}
-
-function removeTemp(path: string): void {
-  try {
-    rmSync(path, { force: true })
-  } catch {
-    // 文件仍被占用时忽略，不影响本次结果
-  }
 }
 
 export async function translate(
@@ -173,7 +182,7 @@ export async function translate(
     if (!decoded) return { ok: false, reason: '翻译结果为空' }
     return { ok: true, text: decoded }
   } finally {
-    removeTemp(inputPath)
-    removeTemp(outputPath)
+    await removeFileEventually(inputPath)
+    await removeFileEventually(outputPath)
   }
 }

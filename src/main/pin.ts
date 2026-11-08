@@ -10,6 +10,7 @@ import {
   type SetHotkeyResult,
 } from '@shared/ipc'
 import { recordPinHistory, type PinHistoryImage } from './pinHistory'
+import { removeFileEventually } from './tempFiles'
 
 const PIN_TITLE = 'snip-pin'
 /** 贴图图片走自定义协议，避免 dev 模式下 http 页面无法加载 file:// 本地资源 */
@@ -18,8 +19,6 @@ const PIN_HOST = 'image'
 const MIN_PIN_SIZE = 24
 const READY_TIMEOUT_MS = 5000
 const READY_TIMEOUT_DEV_MS = 8000
-const REMOVE_RETRIES = 6
-const REMOVE_RETRY_DELAY_MS = 100
 
 let schemeRegistered = false
 
@@ -219,26 +218,6 @@ function isResizeDirection(value: unknown): value is PinResizeDirection {
 
 function isPinTempFile(name: string): boolean {
   return name.startsWith('pin-') && name.endsWith('.png')
-}
-
-const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
-
-async function removeFileEventually(filePath: string): Promise<void> {
-  for (let attempt = 0; attempt < REMOVE_RETRIES; attempt += 1) {
-    try {
-      await unlink(filePath)
-      return
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code === 'ENOENT') return
-      if (attempt === REMOVE_RETRIES - 1) {
-        // 文件可能仍被渲染进程短暂占用；下次启动 init() 会清理
-        console.error('[snip] pin temp cleanup failed:', error)
-        return
-      }
-      await delay(REMOVE_RETRY_DELAY_MS)
-    }
-  }
 }
 
 class PinService {

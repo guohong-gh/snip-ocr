@@ -8,6 +8,7 @@ import {
   type SnipState,
 } from '@shared/ipc'
 import { getHomeWindow } from './homeWindow'
+import { hasPinHistory, hasPinHistorySnapshot } from './pinHistory'
 import { pinService } from './pin'
 
 export interface AppState {
@@ -18,8 +19,6 @@ export interface AppState {
   iconTheme: IconTheme
   customIconUrl: string | null
   autostart: boolean
-  /** 截图历史是否至少有一条（贴图快捷键与首页按钮的可用态都跟着它走） */
-  hasHistory: boolean
   /** 截图历史保留档位（启动时从配置读取，切换时同步更新） */
   historyLimit: HistoryLimit
   /** 选定的 OCR 语言标签；空字符串表示跟随系统默认 */
@@ -34,7 +33,6 @@ export const appState: AppState = {
   iconTheme: 'default',
   customIconUrl: null,
   autostart: false,
-  hasHistory: false,
   historyLimit: 10,
   ocrLanguage: '',
 }
@@ -50,7 +48,7 @@ export function buildState(): SnipState {
     autostart: appState.autostart,
     autostartSupported: app.isPackaged,
     pinCount: pinService.count,
-    hasHistory: appState.hasHistory,
+    hasHistory: hasPinHistorySnapshot(),
     historyLimit: appState.historyLimit,
     ocrLanguage: appState.ocrLanguage,
     version: app.getVersion(),
@@ -62,4 +60,17 @@ export function buildState(): SnipState {
 export function broadcastState(): void {
   const win = getHomeWindow()
   if (win) win.webContents.send(IPC.stateChanged, buildState())
+}
+
+/** 上一次广播过的历史可用态，用于避免同一值重复广播 */
+let lastHasHistory: boolean | null = null
+
+/** 重新读取历史索引，只在可用态变化时广播（buildState 直接从索引快照推导） */
+export function refreshHistoryState(): void {
+  void hasPinHistory().then(() => {
+    const value = hasPinHistorySnapshot()
+    if (lastHasHistory === value) return
+    lastHasHistory = value
+    broadcastState()
+  })
 }

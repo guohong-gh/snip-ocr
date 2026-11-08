@@ -10,6 +10,33 @@ export const OVERLAY_HUD_RECT_PREFIX = '__SNIP_HUD_RECT__'
 export const OVERLAY_TRANSLATE_PREFIX = '__SNIP_TRANSLATE__'
 export const OVERLAY_TRANSLATE_STATUS_PREFIX = '__SNIP_TRANSLATE_STATUS__'
 
+/**
+ * 遮罩页贴图请求位：库的「复制到剪贴板」按钮没有独立的贴图回调，
+ * 注入脚本在点击前置 true，主进程在结果回调里读取并复位。
+ * 页面脚本与主进程共用这一个键名，避免各写一份。
+ */
+export const OVERLAY_PIN_REQUEST_KEY = '__snipPinRequest'
+
+/**
+ * electron-screenshots 的 preload 把 `on(name)` 映射为 `SCREENSHOTS:<name>`。
+ * 回送名在这里定义一份，主进程发完整通道名、注入脚本发页内名字，避免两处各写一份。
+ */
+const OVERLAY_REPLY_PREFIX = 'SCREENSHOTS:'
+
+/** 遮罩页通过 window.screenshots.on(name) 监听的名字 */
+export const OVERLAY_REPLY_NAMES = {
+  ocrResult: 'ocr-result',
+  translateStatus: 'translate-status',
+  translateResult: 'translate-result',
+} as const
+
+/** 主进程 webContents.send 使用的完整通道名 */
+export const OVERLAY_REPLY_CHANNELS = {
+  ocrResult: `${OVERLAY_REPLY_PREFIX}${OVERLAY_REPLY_NAMES.ocrResult}`,
+  translateStatus: `${OVERLAY_REPLY_PREFIX}${OVERLAY_REPLY_NAMES.translateStatus}`,
+  translateResult: `${OVERLAY_REPLY_PREFIX}${OVERLAY_REPLY_NAMES.translateResult}`,
+} as const
+
 /** 遮罩页可发送的全部动作 */
 export const OVERLAY_ACTIONS = [
   'ocr',

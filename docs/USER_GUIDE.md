@@ -40,7 +40,7 @@ npm run dist       # 只解包，快速验证打包
 npm run pack       # 安装包输出到 dist/
 ```
 
-**预期结果**：`npm run selftest` 末行 `[selftest] ALL PASS`（开发态实测 159 PASS + 9 INFO；打包版 `snip-ocr.exe --selftest` 上一轮记录 136 PASS + 9 INFO，0 FAIL，本轮未复测待核实。其中 1 条 INFO 是 `Alt+A` 被其它应用占用时的注册结果）。
+**预期结果**：`npm run selftest` 末行 `[selftest] ALL PASS`（开发态实测 164 PASS + 9 INFO；打包版 `snip-ocr.exe --selftest` 实测 159 PASS + 9 INFO，0 FAIL，无插件与放入插件两种状态均 ALL PASS。其中 1 条 INFO 是 `Alt+A` 被其它应用占用时的注册结果）。
 
 ### 2.3 可选翻译插件（中英双向）
 
