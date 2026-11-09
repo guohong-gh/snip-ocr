@@ -14,6 +14,8 @@ export const UPDATE_CHANNELS = {
 export const UPDATE_ALLOWED_HOSTS = [
   'github.com',
   'api.github.com',
+  // 资产下载落点（2026-11 实测）；旧域名保留以兼容此前行为
+  'release-assets.githubusercontent.com',
   'objects.githubusercontent.com',
 ] as const
 

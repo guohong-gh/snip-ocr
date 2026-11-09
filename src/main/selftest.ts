@@ -903,9 +903,10 @@ async function testUpdate(): Promise<void> {
   if (!app.isPackaged) {
     check(
       '联网白名单只含 GitHub 域名',
-      UPDATE_ALLOWED_HOSTS.length === 3 &&
+      UPDATE_ALLOWED_HOSTS.length === 4 &&
         UPDATE_ALLOWED_HOSTS.includes('github.com') &&
         UPDATE_ALLOWED_HOSTS.includes('api.github.com') &&
+        UPDATE_ALLOWED_HOSTS.includes('release-assets.githubusercontent.com') &&
         UPDATE_ALLOWED_HOSTS.includes('objects.githubusercontent.com') &&
         !UPDATE_ALLOWED_HOSTS.some((host) => host.includes('gitee')),
       { hosts: UPDATE_ALLOWED_HOSTS },

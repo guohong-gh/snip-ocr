@@ -12,6 +12,10 @@ data/
 .DS_Store
 # 离线翻译插件二进制（约 105 MiB，按 README 手动放置）
 plugins/translate-locally/
+# 本地 spec / issue 草稿（见 AGENTS.md 的 issue tracker）
+.scratch/
+# 内部过程性文档，不进入公开仓库
+docs/reports/update-strategy.html
 .tmp/
 .translate-a1/
 .translate-spike/
