@@ -5,12 +5,14 @@ import { OCR_CHANNELS } from './contracts/ocr'
 import { PIN_WINDOW_CHANNELS } from './contracts/pinWindow'
 import { SETTINGS_CHANNELS } from './contracts/settings'
 import { TRANSLATE_CHANNELS } from './contracts/translate'
+import { UPDATE_CHANNELS } from './contracts/update'
 import type { HomeWindowAction } from './contracts/appWindow'
 import type { HistoryLimit, PinHistoryItem } from './contracts/history'
 import type { OcrLanguagesResult } from './contracts/ocr'
 import type { PinApi } from './contracts/pinWindow'
-import type { IconTheme, SnipState, SetHotkeyResult, UpdateCheckResult } from './contracts/settings'
+import type { IconTheme, SnipState, SetHotkeyResult } from './contracts/settings'
 import type { TranslateDirection, TranslateResult, TranslateStatus } from './contracts/translate'
+import type { UpdateActionResult, UpdateOptions, UpdateProgress, UpdateStatus } from './contracts/update'
 
 export * from './contracts/appWindow'
 export * from './contracts/capture'
@@ -19,6 +21,7 @@ export * from './contracts/ocr'
 export * from './contracts/pinWindow'
 export * from './contracts/settings'
 export * from './contracts/translate'
+export * from './contracts/update'
 
 /** 全部 IPC 通道，按业务域组装 */
 export const IPC = {
@@ -29,6 +32,7 @@ export const IPC = {
   ...CAPTURE_CHANNELS,
   ...PIN_WINDOW_CHANNELS,
   ...APP_WINDOW_CHANNELS,
+  ...UPDATE_CHANNELS,
 } as const
 
 export interface SnipApi {
@@ -38,7 +42,12 @@ export interface SnipApi {
   setAutostart(enabled: boolean): Promise<SetHotkeyResult>
   setIconTheme(theme: IconTheme): Promise<SetHotkeyResult>
   pickCustomIcon(): Promise<SetHotkeyResult>
-  checkUpdate(): Promise<UpdateCheckResult>
+  checkUpdate(): Promise<UpdateStatus>
+  getUpdateStatus(): Promise<UpdateStatus>
+  downloadUpdate(): Promise<UpdateStatus>
+  cancelUpdate(): Promise<UpdateStatus>
+  installUpdate(): Promise<UpdateActionResult>
+  setUpdateOptions(options: Partial<UpdateOptions>): Promise<UpdateStatus>
   translateStatus(): Promise<TranslateStatus>
   translate(text: string, direction: TranslateDirection): Promise<TranslateResult>
   listOcrLanguages(): Promise<OcrLanguagesResult>
@@ -59,5 +68,7 @@ export interface SnipApi {
   onOpenSettings(listener: () => void): () => void
   onStateChanged(listener: (state: SnipState) => void): () => void
   onPinHistoryChanged(listener: () => void): () => void
+  onUpdateStatus(listener: (status: UpdateStatus) => void): () => void
+  onUpdateProgress(listener: (progress: UpdateProgress) => void): () => void
   pin: PinApi
 }

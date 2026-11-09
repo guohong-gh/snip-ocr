@@ -20,6 +20,18 @@ export interface StoredConfig {
   ocrLanguage: string
   /** 首次关闭到托盘时是否已提示过 */
   trayHintShown: boolean
+  /** 自动检查更新 */
+  updateAutoCheck: boolean
+  /** 发现新版本后自动后台下载 */
+  updateAutoDownload: boolean
+  /** 自动检查间隔（小时） */
+  updateIntervalHours: number
+  /** 上次检查更新时间（epoch ms），用于节流 */
+  updateLastCheckAt: number
+  /** 上次更新失败时间（epoch ms） */
+  updateLastErrorAt: number
+  /** 上次更新失败原因 */
+  updateLastErrorReason: string
 }
 
 const DEFAULTS: StoredConfig = {
@@ -29,6 +41,12 @@ const DEFAULTS: StoredConfig = {
   historyLimit: 10,
   ocrLanguage: '',
   trayHintShown: false,
+  updateAutoCheck: true,
+  updateAutoDownload: true,
+  updateIntervalHours: 24,
+  updateLastCheckAt: 0,
+  updateLastErrorAt: 0,
+  updateLastErrorReason: '',
 }
 
 let legacyDataDir: string | null = null
@@ -113,7 +131,8 @@ function configPath(): string {
   return join(app.getPath('userData'), 'config.json')
 }
 
-function normalize(raw: unknown): StoredConfig {
+/** 配置归一化：非法字段一律回落到默认值（自检也直接复用） */
+export function normalizeConfig(raw: unknown): StoredConfig {
   if (typeof raw !== 'object' || raw === null) return { ...DEFAULTS }
   const source = raw as Record<string, unknown>
   const hotkey = source.hotkey
@@ -121,6 +140,7 @@ function normalize(raw: unknown): StoredConfig {
   const iconTheme = source.iconTheme
   const historyLimit = source.historyLimit
   const ocrLanguage = source.ocrLanguage
+  const updateIntervalHours = source.updateIntervalHours
   return {
     hotkey: typeof hotkey === 'string' && hotkey.trim() ? hotkey.trim() : DEFAULTS.hotkey,
     pinHotkey: typeof pinHotkey === 'string' && pinHotkey.trim() ? pinHotkey.trim() : DEFAULTS.pinHotkey,
@@ -135,7 +155,22 @@ function normalize(raw: unknown): StoredConfig {
     ocrLanguage:
       typeof ocrLanguage === 'string' && ocrLanguage.trim() ? ocrLanguage.trim() : DEFAULTS.ocrLanguage,
     trayHintShown: source.trayHintShown === true,
+    updateAutoCheck: typeof source.updateAutoCheck === 'boolean' ? source.updateAutoCheck : DEFAULTS.updateAutoCheck,
+    updateAutoDownload:
+      typeof source.updateAutoDownload === 'boolean' ? source.updateAutoDownload : DEFAULTS.updateAutoDownload,
+    updateIntervalHours:
+      typeof updateIntervalHours === 'number' && Number.isInteger(updateIntervalHours) && updateIntervalHours >= 1 && updateIntervalHours <= 168
+        ? updateIntervalHours
+        : DEFAULTS.updateIntervalHours,
+    updateLastCheckAt: timestamp(source.updateLastCheckAt),
+    updateLastErrorAt: timestamp(source.updateLastErrorAt),
+    updateLastErrorReason:
+      typeof source.updateLastErrorReason === 'string' ? source.updateLastErrorReason : DEFAULTS.updateLastErrorReason,
   }
+}
+
+function timestamp(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
 }
 
 export function loadConfig(): StoredConfig {
@@ -143,7 +178,7 @@ export function loadConfig(): StoredConfig {
   try {
     const file = configPath()
     const raw = existsSync(file) ? JSON.parse(readFileSync(file, 'utf-8')) : null
-    cachedConfig = normalize(raw)
+    cachedConfig = normalizeConfig(raw)
   } catch {
     cachedConfig = { ...DEFAULTS }
   }

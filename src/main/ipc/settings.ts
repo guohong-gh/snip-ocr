@@ -1,11 +1,5 @@
 import { ipcMain } from 'electron'
-import {
-  ICON_THEMES,
-  IPC,
-  type IconTheme,
-  type SetHotkeyResult,
-  type UpdateCheckResult,
-} from '@shared/ipc'
+import { ICON_THEMES, IPC, type IconTheme, type SetHotkeyResult } from '@shared/ipc'
 import { buildState } from '../appState'
 
 export interface SettingsIpcHandlers {
@@ -14,7 +8,6 @@ export interface SettingsIpcHandlers {
   setAutostart(enabled: boolean): SetHotkeyResult
   applyIconTheme(theme: IconTheme): Promise<SetHotkeyResult>
   pickCustomIcon(): Promise<SetHotkeyResult>
-  checkUpdate(): Promise<UpdateCheckResult>
 }
 
 export function registerSettingsIpc(handlers: SettingsIpcHandlers): string[] {
@@ -42,7 +35,6 @@ export function registerSettingsIpc(handlers: SettingsIpcHandlers): string[] {
     return handlers.applyIconTheme(theme as IconTheme)
   })
   ipcMain.handle(IPC.pickCustomIcon, () => handlers.pickCustomIcon())
-  ipcMain.handle(IPC.checkUpdate, () => handlers.checkUpdate())
   return [
     IPC.getState,
     IPC.setHotkey,
@@ -50,6 +42,5 @@ export function registerSettingsIpc(handlers: SettingsIpcHandlers): string[] {
     IPC.setAutostart,
     IPC.setIconTheme,
     IPC.pickCustomIcon,
-    IPC.checkUpdate,
   ]
 }

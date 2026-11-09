@@ -1,6 +1,6 @@
 {
   "name": "snip-ocr",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "本地截图工具 - 系统截图平替（截图/复制/保存/贴图/本地识字）",
   "main": "./out/main/index.js",
   "author": "snip-ocr",
@@ -15,10 +15,11 @@
     "build": "npm run typecheck && electron-vite build",
     "selftest": "npm run build && electron . --selftest",
     "dist": "npm run build && electron-builder --dir",
-    "pack": "npm run build && electron-builder"
+    "pack": "npm run build && electron-builder --publish never"
   },
   "dependencies": {
     "electron-screenshots": "^0.6.2",
+    "electron-updater": "6.8.11",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

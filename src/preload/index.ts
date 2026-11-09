@@ -14,7 +14,10 @@ import {
   type TranslateDirection,
   type TranslateResult,
   type TranslateStatus,
-  type UpdateCheckResult,
+  type UpdateActionResult,
+  type UpdateOptions,
+  type UpdateProgress,
+  type UpdateStatus,
 } from '@shared/ipc'
 
 const pinApi: PinApi = {
@@ -39,7 +42,13 @@ const api: SnipApi = {
   setIconTheme: (theme: IconTheme) =>
     ipcRenderer.invoke(IPC.setIconTheme, theme) as Promise<SetHotkeyResult>,
   pickCustomIcon: () => ipcRenderer.invoke(IPC.pickCustomIcon) as Promise<SetHotkeyResult>,
-  checkUpdate: () => ipcRenderer.invoke(IPC.checkUpdate) as Promise<UpdateCheckResult>,
+  checkUpdate: () => ipcRenderer.invoke(IPC.updateCheck) as Promise<UpdateStatus>,
+  getUpdateStatus: () => ipcRenderer.invoke(IPC.updateGetStatus) as Promise<UpdateStatus>,
+  downloadUpdate: () => ipcRenderer.invoke(IPC.updateDownload) as Promise<UpdateStatus>,
+  cancelUpdate: () => ipcRenderer.invoke(IPC.updateCancel) as Promise<UpdateStatus>,
+  installUpdate: () => ipcRenderer.invoke(IPC.updateInstall) as Promise<UpdateActionResult>,
+  setUpdateOptions: (options: Partial<UpdateOptions>) =>
+    ipcRenderer.invoke(IPC.updateSetOptions, options) as Promise<UpdateStatus>,
   translateStatus: () => ipcRenderer.invoke(IPC.translateStatus) as Promise<TranslateStatus>,
   translate: (text: string, direction: TranslateDirection) =>
     ipcRenderer.invoke(IPC.translate, text, direction) as Promise<TranslateResult>,
@@ -83,6 +92,20 @@ const api: SnipApi = {
     ipcRenderer.on(IPC.pinHistoryChanged, handler)
     return () => {
       ipcRenderer.removeListener(IPC.pinHistoryChanged, handler)
+    }
+  },
+  onUpdateStatus: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: UpdateStatus): void => listener(status)
+    ipcRenderer.on(IPC.updateStatus, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.updateStatus, handler)
+    }
+  },
+  onUpdateProgress: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: UpdateProgress): void => listener(progress)
+    ipcRenderer.on(IPC.updateProgress, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.updateProgress, handler)
     }
   },
   pin: pinApi,

@@ -7,6 +7,7 @@ import {
   loadConfig,
   migrateLegacyData,
   readCustomIconDataUrl,
+  saveConfig,
   useSelftestDataSandbox,
 } from './config'
 import {
@@ -37,16 +38,18 @@ import {
   applyHotkey,
   applyIconTheme,
   applyPinHotkey,
-  checkUpdate,
   pickCustomIcon,
   readAutostart,
   setAutostart,
 } from './settingsActions'
+import { UpdateService } from './update/updateService'
 
 const APP_ID = 'local.snip.ocr'
 const SELFTEST = process.argv.includes('--selftest')
 const START_HIDDEN = process.argv.includes('--hidden')
 const START_SETTINGS = process.argv.includes('--settings')
+
+let updateService: UpdateService | null = null
 
 async function startCapture(): Promise<void> {
   try {
@@ -108,6 +111,35 @@ function boot(): void {
   appState.customIconUrl = readCustomIconDataUrl()
   void screenshotService.setToolbarTheme(appState.iconTheme, appState.customIconUrl)
   appState.autostart = readAutostart()
+  // 自检注入假适配器；便携版与开发态不支持在线更新
+  updateService = new UpdateService({
+    currentVersion: app.getVersion(),
+    supported: SELFTEST ? true : app.isPackaged && !process.env['PORTABLE_EXECUTABLE_DIR'],
+    autoCheck: config.updateAutoCheck,
+    autoDownload: config.updateAutoDownload,
+    intervalHours: config.updateIntervalHours,
+    lastCheckAt: config.updateLastCheckAt,
+    lastError: config.updateLastErrorReason,
+    lastErrorAt: config.updateLastErrorAt,
+    adapterFactory: async () => {
+      if (SELFTEST) {
+        const { selftestUpdateAdapter } = await import('./update/selftestAdapter')
+        return selftestUpdateAdapter
+      }
+      const { ElectronUpdaterAdapter } = await import('./update/electronUpdaterAdapter')
+      return new ElectronUpdaterAdapter()
+    },
+    persist: (patch) => {
+      saveConfig(patch)
+    },
+    notify,
+    onStatus: (status) => {
+      getHomeWindow()?.webContents.send(IPC.updateStatus, status)
+    },
+    onProgress: (progress) => {
+      getHomeWindow()?.webContents.send(IPC.updateProgress, progress)
+    },
+  })
   const pinApplied = applyPinHotkey(config.pinHotkey)
   if (!pinApplied.ok) notify('贴图快捷键不可用', `${pinApplied.error}，可在设置里更换`)
   refreshHistoryState()
@@ -159,8 +191,8 @@ function boot(): void {
       setAutostart,
       applyIconTheme,
       pickCustomIcon,
-      checkUpdate,
     },
+    update: updateService,
     appWindow: {
       startCapture,
       pinLast: pinLastCapture,
@@ -171,6 +203,8 @@ function boot(): void {
   })
 
   console.log(`[snip] ready · hotkey=${appState.hotkey} · pinHotkey=${appState.pinHotkey} · displays=${screen.getAllDisplays().length}`)
+  // 自检不启动自动检查调度
+  if (!SELFTEST) updateService.startScheduler()
   if (SELFTEST) {
     // 自检只在 --selftest 时动态加载，不进生产启动关键路径
     void import('./selftest').then(({ runSelftest }) => runSelftest())
@@ -196,6 +230,7 @@ if (!app.requestSingleInstanceLock()) {
   })
   app.on('before-quit', () => {
     setQuitting(true)
+    updateService?.dispose()
     screenshotService.dispose()
     pinService.dispose()
     disposeHome()

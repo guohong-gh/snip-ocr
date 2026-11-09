@@ -1137,12 +1137,50 @@ textarea:focus-visible,
 /* 更新 */
 .update-section {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
   margin-top: 18px;
   padding-top: 14px;
   border-top: 1px solid var(--rule);
+}
+
+.update-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.update-progress {
+  height: 5px;
+  border-radius: 2px;
+  background: var(--rule);
+  overflow: hidden;
+}
+
+.update-progress-bar {
+  height: 100%;
+  background: var(--signal);
+  transition: width 160ms linear;
+}
+
+.update-notes {
+  max-height: 96px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--plate);
+  color: var(--ink-3);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.update-switches {
+  display: flex;
+  flex-direction: column;
 }
 
 .update-info {
@@ -1162,6 +1200,10 @@ textarea:focus-visible,
 .update-status {
   color: var(--ink-3);
   font-size: 10.5px;
+}
+
+.update-status--error {
+  color: var(--signal);
 }
 
 .update-btn {
@@ -1189,6 +1231,18 @@ textarea:focus-visible,
 .update-btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+.update-btn.primary {
+  border-color: var(--signal);
+  background: var(--signal);
+  color: #fff;
+}
+
+.update-btn.primary:hover:not(:disabled) {
+  border-color: var(--signal-hover);
+  background: var(--signal-hover);
+  color: #fff;
 }
 
 /* 退出入口：电源菜单删除后，只保留设置页底部这一个文字按钮 */

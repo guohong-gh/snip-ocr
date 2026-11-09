@@ -4,9 +4,12 @@ import { registerOcrIpc } from './ocr'
 import { registerPinWindowIpc } from './pinWindow'
 import { registerSettingsIpc, type SettingsIpcHandlers } from './settings'
 import { registerTranslateIpc } from './translate'
+import { registerUpdateIpc } from './update'
+import type { UpdateService } from '../update/updateService'
 
 export interface IpcRegistry {
   settings: SettingsIpcHandlers
+  update: UpdateService
   appWindow: AppWindowIpcHandlers
 }
 
@@ -19,6 +22,7 @@ export function registerIpc(registry: IpcRegistry): void {
     ...registerHistoryIpc(),
     ...registerOcrIpc(),
     ...registerTranslateIpc(),
+    ...registerUpdateIpc(registry.update),
     ...registerPinWindowIpc(),
     ...registerAppWindowIpc(registry.appWindow),
   )

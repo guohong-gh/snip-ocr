@@ -1,6 +1,6 @@
 import { app, dialog, nativeImage } from 'electron'
 import { statSync } from 'node:fs'
-import type { IconTheme, SetHotkeyResult, UpdateCheckResult } from '@shared/ipc'
+import type { IconTheme, SetHotkeyResult } from '@shared/ipc'
 import { appState, broadcastState } from './appState'
 import { saveConfig, saveCustomIcon } from './config'
 import { getHomeWindow } from './homeWindow'
@@ -76,9 +76,3 @@ export function setAutostart(enabled: boolean): SetHotkeyResult {
   }
 }
 
-export function checkUpdate(): Promise<UpdateCheckResult> {
-  // 离线应用：不做网络请求，也不伪造版本
-  return new Promise((resolve) => {
-    setTimeout(() => resolve({ status: 'latest', version: app.getVersion() }), 1200)
-  })
-}

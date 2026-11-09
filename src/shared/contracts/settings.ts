@@ -9,7 +9,6 @@ export const SETTINGS_CHANNELS = {
   setAutostart: 'snip:set-autostart',
   setIconTheme: 'snip:set-icon-theme',
   pickCustomIcon: 'snip:pick-custom-icon',
-  checkUpdate: 'snip:check-update',
 } as const
 
 export const DEFAULT_HOTKEY = 'Alt+A'
@@ -50,9 +49,4 @@ export interface SnipState {
 export interface SetHotkeyResult {
   ok: boolean
   error?: string
-}
-
-export interface UpdateCheckResult {
-  status: 'latest'
-  version: string
 }

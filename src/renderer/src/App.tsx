@@ -12,6 +12,8 @@ import {
   type PinHistoryItem,
   type SetHotkeyResult,
   type SnipState,
+  type UpdateProgress,
+  type UpdateStatus,
 } from '@shared/ipc'
 import { toolIconFor, TOOL_LABELS, type ToolKey } from '@shared/icons'
 
@@ -218,6 +220,41 @@ function formatHistoryTime(value: number): string {
   )}:${pad(date.getMinutes())}`
 }
 
+function formatClock(value: number): string {
+  const date = new Date(value)
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+/** 设置页七态文案：检查中 / 已是最新 / 发现新版本 / 下载中 / 待重启 / 失败 / 未检查 */
+function describeUpdate(update: UpdateStatus | null, progress: UpdateProgress | null): string {
+  if (!update) return '未检查更新'
+  if (!update.supported) return '便携版或开发版不支持在线更新，请手动下载新版本'
+  const failure = update.error
+    ? `上次检查更新失败：${update.error}${update.errorAt ? `（${formatHistoryTime(update.errorAt)}）` : ''}`
+    : '未检查更新'
+  switch (update.phase) {
+    case 'checking':
+      return '正在检查更新…'
+    case 'latest': {
+      const clock = update.checkedAt ? ` · ${formatClock(update.checkedAt)}` : ''
+      return `当前已是最新版本 v${update.latestVersion ?? update.currentVersion}${clock}`
+    }
+    case 'available':
+      return update.autoDownload
+        ? `发现新版本 v${update.latestVersion}，即将后台下载…`
+        : `发现新版本 v${update.latestVersion}`
+    case 'downloading':
+      return `正在下载 v${update.latestVersion} · ${Math.round(progress?.percent ?? 0)}%`
+    case 'downloaded':
+      return `v${update.latestVersion} 已下载，重启后完成安装`
+    case 'error':
+      return failure
+    default:
+      return failure
+  }
+}
+
 export default function App() {
   const [state, setState] = useState<SnipState | null>(null)
   const [tab, setTab] = useState<Tab | null>(null)
@@ -225,8 +262,8 @@ export default function App() {
   const [history, setHistory] = useState<PinHistoryItem[] | null>(null)
   const [historyVersion, setHistoryVersion] = useState(0)
   const [toast, setToast] = useState<string | null>(null)
-  const [checking, setChecking] = useState(false)
-  const [updateStatus, setUpdateStatus] = useState('当前已是最新版本')
+  const [update, setUpdate] = useState<UpdateStatus | null>(null)
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
   const [ocrLanguages, setOcrLanguages] = useState<OcrLanguageInfo[]>([])
   const [ocrLanguagesError, setOcrLanguagesError] = useState<string | null>(null)
   const toastTimer = useRef<number | null>(null)
@@ -243,6 +280,15 @@ export default function App() {
       if (alive) setState(next)
     })
     const offState = window.snip.onStateChanged((next) => setState(next))
+    void window.snip.getUpdateStatus().then((next) => {
+      if (alive) setUpdate(next)
+    })
+    const offUpdate = window.snip.onUpdateStatus((next) => {
+      // 进入下载态时清空上一次的进度，退出下载态后不再展示进度条
+      setUpdateProgress((prev) => (next.phase === 'downloading' ? (prev ?? null) : null))
+      setUpdate(next)
+    })
+    const offProgress = window.snip.onUpdateProgress((next) => setUpdateProgress(next))
     const offSettings = window.snip.onOpenSettings(() => {
       setHistoryOpen(false)
       setTab('hotkeys')
@@ -251,6 +297,8 @@ export default function App() {
     return () => {
       alive = false
       offState()
+      offUpdate()
+      offProgress()
       offSettings()
       if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
     }
@@ -302,6 +350,11 @@ export default function App() {
   const pinHotkey = state?.pinHotkey ?? DEFAULT_PIN_HOTKEY
   const pinCount = state?.pinCount ?? 0
   const version = state?.version ?? '0.1.0'
+  const updatePhase = update?.phase ?? 'idle'
+  const checking = updatePhase === 'checking'
+  const updateText = describeUpdate(update, updateProgress)
+  const progressPercent = Math.max(0, Math.min(100, Math.round(updateProgress?.percent ?? 0)))
+  const updateUnsupported = update?.supported === false
 
   const applyScreenshotHotkey = async (accelerator: string): Promise<SetHotkeyResult> => {
     const result = await window.snip.setHotkey(accelerator)
@@ -675,27 +728,118 @@ export default function App() {
                         }}
                       />
                     </div>
-                    <div className="update-section">
-                      <div className="update-info">
-                        <div className="update-version">snip-ocr v{version}</div>
-                        <div className="update-status">{updateStatus}</div>
+                    <div className="update-section" data-state={updatePhase}>
+                      <div className="update-summary">
+                        <div className="update-info">
+                          <div className="update-version">snip-ocr v{version}</div>
+                          <div
+                            className={updatePhase === 'error' ? 'update-status update-status--error' : 'update-status'}
+                          >
+                            {updateText}
+                          </div>
+                        </div>
+                        {updateUnsupported ? (
+                          <button type="button" className="update-btn" disabled>
+                            检查更新
+                          </button>
+                        ) : updatePhase === 'downloading' ? (
+                          <button
+                            type="button"
+                            className="update-btn"
+                            onClick={() => {
+                              void window.snip.cancelUpdate()
+                            }}
+                          >
+                            取消下载
+                          </button>
+                        ) : updatePhase === 'downloaded' ? (
+                          <button
+                            type="button"
+                            className="update-btn primary"
+                            onClick={() => {
+                              void window.snip.installUpdate().then((result) => {
+                                if (!result.ok) showToast(result.error ?? '安装更新失败')
+                              })
+                            }}
+                          >
+                            立即重启安装
+                          </button>
+                        ) : updatePhase === 'available' ? (
+                          <button
+                            type="button"
+                            className="update-btn primary"
+                            onClick={() => {
+                              setUpdateProgress(null)
+                              void window.snip.downloadUpdate()
+                            }}
+                          >
+                            下载更新
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="update-btn"
+                            disabled={checking}
+                            onClick={() => {
+                              void window.snip.checkUpdate()
+                            }}
+                          >
+                            {checking ? '检查中…' : '检查更新'}
+                          </button>
+                        )}
                       </div>
-                      <button
-                        type="button"
-                        className="update-btn"
-                        disabled={checking}
-                        onClick={() => {
-                          setChecking(true)
-                          setUpdateStatus('正在检查更新…')
-                          void window.snip.checkUpdate().then((result) => {
-                            setChecking(false)
-                            setUpdateStatus(`当前已是最新版本 v${result.version}`)
-                            showToast(`当前已是最新版本 v${result.version}`)
-                          })
-                        }}
-                      >
-                        {checking ? '检查中...' : '检查更新'}
-                      </button>
+                      {updatePhase === 'downloading' ? (
+                        <div
+                          className="update-progress"
+                          role="progressbar"
+                          aria-label="更新下载进度"
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-valuenow={progressPercent}
+                        >
+                          <div className="update-progress-bar" style={{ width: `${progressPercent}%` }} />
+                        </div>
+                      ) : null}
+                      {update?.notes &&
+                      (updatePhase === 'available' ||
+                        updatePhase === 'downloading' ||
+                        updatePhase === 'downloaded') ? (
+                        <div className="update-notes">{update.notes}</div>
+                      ) : null}
+                      <div className="update-switches">
+                        <div className="setting-row">
+                          <div className="s-info">
+                            <div className="s-title">自动检查更新</div>
+                            <div className="s-desc">
+                              {updateUnsupported
+                                ? '便携版不支持在线更新，请手动下载新版本'
+                                : '启动后自动检查，之后每 24 小时检查一次'}
+                            </div>
+                          </div>
+                          <Switch
+                            label="自动检查更新"
+                            checked={update?.autoCheck ?? true}
+                            disabled={updateUnsupported}
+                            onChange={(next) => {
+                              void window.snip.setUpdateOptions({ autoCheck: next })
+                            }}
+                          />
+                        </div>
+                        <div className="setting-row">
+                          <div className="s-info">
+                            <div className="s-title">自动下载更新包</div>
+                            <div className="s-desc">发现新版本后后台下载，安装与重启仍需你确认</div>
+                          </div>
+                          <Switch
+                            label="自动下载更新包"
+                            checked={update?.autoDownload ?? true}
+                            disabled={updateUnsupported}
+                            onChange={(next) => {
+                              void window.snip.setUpdateOptions({ autoDownload: next })
+                            }}
+                          />
+                        </div>
+                      </div>
                     </div>
                     <div className="setting-tail">
                       <button

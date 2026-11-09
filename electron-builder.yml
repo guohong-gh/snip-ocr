@@ -19,7 +19,6 @@ files:
   - '!electron-builder.yml'
   - '!README.md'
   - '!AGENTS.md'
-  - '!QODER.md'
   - '!PRODUCT.md'
   - '!DESIGN.md'
   - '!.impeccable/**'
@@ -46,3 +45,7 @@ nsis:
   artifactName: snip-ocr-Setup-${version}.${ext}
 portable:
   artifactName: snip-ocr-Portable-${version}.${ext}
+publish:
+  provider: github
+  owner: guohong-gh
+  repo: snip-ocr

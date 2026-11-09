@@ -2,7 +2,15 @@ import { app, BrowserWindow, clipboard, dialog, globalShortcut, nativeImage, scr
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { DEFAULT_HOTKEY, DEFAULT_PIN_HOTKEY, IPC, type PinMeta } from '@shared/ipc'
+import {
+  DEFAULT_HOTKEY,
+  DEFAULT_PIN_HOTKEY,
+  IPC,
+  UPDATE_ALLOWED_HOSTS,
+  type PinMeta,
+  type UpdateStatus,
+} from '@shared/ipc'
+import { compareVersions } from '@shared/version'
 import {
   OVERLAY_ACTION_PREFIX,
   OVERLAY_COPY_PREFIX,
@@ -46,7 +54,13 @@ import {
   resolvePinImagePath,
 } from './pin'
 import { listPinHistory, pinHistoryDir, recordPinHistory, setPinHistoryLimit } from './pinHistory'
-import { loadConfig, realUserDataPath, saveConfig, selftestDataDir } from './config'
+import { loadConfig, normalizeConfig, realUserDataPath, saveConfig, selftestDataDir } from './config'
+import { constructionCount } from './update/electronUpdaterAdapter'
+import {
+  emitSelftestUpdateEvent,
+  resetSelftestUpdateCalls,
+  selftestUpdateCalls,
+} from './update/selftestAdapter'
 import { screenshotService, trayIconPath, type CaptureOutcome } from './screenshot'
 import { fingerprintPixels, framesLookSame, stitchVertical } from './stitch'
 import { translate, translateStatus } from './translate'
@@ -466,7 +480,14 @@ async function testHomeWindow(shotPath: string): Promise<void> {
     setAutostart: 'snip:set-autostart',
     setIconTheme: 'snip:set-icon-theme',
     pickCustomIcon: 'snip:pick-custom-icon',
-    checkUpdate: 'snip:check-update',
+    updateCheck: 'snip:update-check',
+    updateDownload: 'snip:update-download',
+    updateCancel: 'snip:update-cancel',
+    updateInstall: 'snip:update-install',
+    updateSetOptions: 'snip:update-set-options',
+    updateGetStatus: 'snip:update-get-status',
+    updateStatus: 'snip:update-status',
+    updateProgress: 'snip:update-progress',
     homeStartCapture: 'snip:home-start-capture',
     homeWindowAction: 'snip:home-window-action',
     homeReady: 'snip:home-ready',
@@ -512,6 +533,8 @@ async function testHomeWindow(shotPath: string): Promise<void> {
     IPC.stateChanged,
     IPC.pinHistoryChanged,
     IPC.homeOpenSettings,
+    IPC.updateStatus,
+    IPC.updateProgress,
   ])
   const expectedInboundChannels: string[] = Object.values(IPC).filter(
     (channel) => !outboundChannels.has(channel),
@@ -711,15 +734,108 @@ async function testHomeWindow(shotPath: string): Promise<void> {
   )
   check(
     '通用设置自启状态与开发态禁用一致',
-    generalTab && general.switches === 1 && general.autostartDisabled === !general.autostartSupported,
+    generalTab && general.switches === 3 && general.autostartDisabled === !general.autostartSupported,
     general,
   )
 
-  const update = await evalJson<{ status: string; version: string }>(
-    win.webContents,
-    `return await window.snip.checkUpdate();`,
+  const update = await evalJson<UpdateStatus>(win.webContents, `return await window.snip.checkUpdate();`)
+  check(
+    '检查更新通道返回状态机快照（不再返回假 latest）',
+    update.phase === 'checking' && update.supported && update.currentVersion.length > 0,
+    update,
   )
-  check('检查更新返回最新版本', update.status === 'latest' && update.version.length > 0, update)
+
+  await sleep(120)
+  const checkingUi = await evalJson<{ state: string; button: string; disabled: boolean }>(
+    win.webContents,
+    `const section = document.querySelector('.update-section');
+     const btn = section?.querySelector('.update-btn');
+     return {
+       state: section?.getAttribute('data-state') || '',
+       button: btn ? (btn.textContent || '').trim() : '',
+       disabled: Boolean(btn && btn.disabled)
+     };`,
+  )
+  check(
+    '检查中状态按钮禁用',
+    checkingUi.state === 'checking' && checkingUi.button === '检查中…' && checkingUi.disabled,
+    checkingUi,
+  )
+
+  await evalJson(
+    win.webContents,
+    `return await window.snip.setUpdateOptions({ autoCheck: true, autoDownload: true });`,
+  )
+  emitSelftestUpdateEvent({ type: 'available', version: '9.9.9', notes: '测试版本说明' })
+  await sleep(180)
+  const downloadingUi = await evalJson<{
+    state: string
+    button: string
+    progress: number
+    notes: number
+  }>(
+    win.webContents,
+    `const section = document.querySelector('.update-section');
+     const btn = section?.querySelector('.update-btn');
+     return {
+       state: section?.getAttribute('data-state') || '',
+       button: btn ? (btn.textContent || '').trim() : '',
+       progress: document.querySelectorAll('.update-progress').length,
+       notes: document.querySelectorAll('.update-notes').length
+     };`,
+  )
+  check(
+    '设置页下载态显示进度条、取消按钮与版本说明',
+    downloadingUi.state === 'downloading' &&
+      downloadingUi.button === '取消下载' &&
+      downloadingUi.progress === 1 &&
+      downloadingUi.notes === 1,
+    downloadingUi,
+  )
+
+  emitSelftestUpdateEvent({ type: 'progress', percent: 40, transferred: 400, total: 1000 })
+  await sleep(120)
+  const progressWidth = await evalJson<string>(
+    win.webContents,
+    `return document.querySelector('.update-progress-bar')?.style.width || '';`,
+  )
+  check('进度条跟随独立进度通道', progressWidth === '40%', { progressWidth })
+
+  emitSelftestUpdateEvent({ type: 'downloaded', version: '9.9.9' })
+  await sleep(180)
+  const downloadedUi = await evalJson<{ state: string; button: string; text: string }>(
+    win.webContents,
+    `const section = document.querySelector('.update-section');
+     return {
+       state: section?.getAttribute('data-state') || '',
+       button: (section?.querySelector('.update-btn')?.textContent || '').trim(),
+       text: (section?.querySelector('.update-status')?.textContent || '').trim()
+     };`,
+  )
+  check(
+    '下载完成显示待重启文案与立即重启安装',
+    downloadedUi.state === 'downloaded' &&
+      downloadedUi.button === '立即重启安装' &&
+      downloadedUi.text.includes('已下载'),
+    downloadedUi,
+  )
+
+  emitSelftestUpdateEvent({ type: 'error', message: 'network timeout' })
+  await sleep(180)
+  const errorUi = await evalJson<{ state: string; text: string; errorClass: boolean }>(
+    win.webContents,
+    `const section = document.querySelector('.update-section');
+     return {
+       state: section?.getAttribute('data-state') || '',
+       text: (section?.querySelector('.update-status')?.textContent || '').trim(),
+       errorClass: Boolean(section?.querySelector('.update-status--error'))
+     };`,
+  )
+  check(
+    '失败态显示原因与时间且按钮可重试',
+    errorUi.state === 'error' && errorUi.text.includes('network timeout') && errorUi.errorClass,
+    errorUi,
+  )
 
   // 切回快捷键页并截图设置页供目视检查
   await evalJson<boolean>(
@@ -742,6 +858,187 @@ async function testHomeWindow(shotPath: string): Promise<void> {
   await sleep(150)
   win.hide()
   await sleep(250)
+}
+
+/** 检查更新：版本比较、状态机、失败分支、白名单与不联网守护（全程走假适配器） */
+async function testUpdate(): Promise<void> {
+  const versionCases: { left: string; right: string; expected: number | null }[] = [
+    { left: '0.10.0', right: '0.9.0', expected: 1 },
+    { left: '1.0.0', right: '0.99.99', expected: 1 },
+    { left: '1.0.0-beta', right: '1.0.0', expected: -1 },
+    { left: '1.0.0-beta.2', right: '1.0.0-beta.1', expected: 1 },
+    { left: 'v0.4.2', right: '0.4.2', expected: 0 },
+    { left: '1.2', right: '1.2.0', expected: null },
+    { left: 'abc', right: '1.0.0', expected: null },
+  ]
+  const versionResults = versionCases.map((item) => ({
+    ...item,
+    actual: compareVersions(item.left, item.right),
+  }))
+  check(
+    '版本比较表驱动正确',
+    versionResults.every((item) => item.actual === item.expected),
+    versionResults,
+  )
+
+  const normalized = normalizeConfig({
+    updateAutoCheck: 'yes',
+    updateAutoDownload: null,
+    updateLastCheckAt: -9,
+    updateIntervalHours: 0,
+    updateLastErrorReason: 7,
+  })
+  check(
+    '更新配置非法值回落默认',
+    normalized.updateAutoCheck === true &&
+      normalized.updateAutoDownload === true &&
+      normalized.updateLastCheckAt === 0 &&
+      normalized.updateIntervalHours === 24 &&
+      normalized.updateLastErrorReason === '',
+    normalized,
+  )
+
+  check('自检未构造真实 electron-updater 适配器', constructionCount === 0, { constructionCount })
+
+  if (!app.isPackaged) {
+    check(
+      '联网白名单只含 GitHub 域名',
+      UPDATE_ALLOWED_HOSTS.length === 3 &&
+        UPDATE_ALLOWED_HOSTS.includes('github.com') &&
+        UPDATE_ALLOWED_HOSTS.includes('api.github.com') &&
+        UPDATE_ALLOWED_HOSTS.includes('objects.githubusercontent.com') &&
+        !UPDATE_ALLOWED_HOSTS.some((host) => host.includes('gitee')),
+      { hosts: UPDATE_ALLOWED_HOSTS },
+    )
+    const builder = readFileSync(join(app.getAppPath(), 'electron-builder.yml'), 'utf8')
+    check(
+      '打包配置只有一个 GitHub 发布源',
+      (builder.match(/provider:\s*github/g) ?? []).length === 1 &&
+        /owner:\s*guohong-gh/.test(builder) &&
+        /repo:\s*snip-ocr/.test(builder),
+      {},
+    )
+    const adapterSource = readFileSync(
+      join(app.getAppPath(), 'src/main/update/electronUpdaterAdapter.ts'),
+      'utf8',
+    )
+    check(
+      '真实适配器不含明文 http 地址或 token 凭据',
+      !adapterSource.includes('http://') && !/access_token|password=/i.test(adapterSource),
+      {},
+    )
+  }
+
+  const win = openMainWindow()
+  await sleep(400)
+  const wc = win.webContents
+  const readStatus = (): Promise<UpdateStatus> =>
+    evalJson<UpdateStatus>(wc, `return await window.snip.getUpdateStatus();`)
+
+  await evalJson(
+    wc,
+    `window.__snipProgress = []; window.__snipProgressOff?.();
+     window.__snipProgressOff = window.snip.onUpdateProgress(p => window.__snipProgress.push(p));
+     return await window.snip.setUpdateOptions({ autoCheck: true, autoDownload: true });`,
+  )
+
+  const initial = await readStatus()
+  resetSelftestUpdateCalls()
+  await evalJson(wc, `return await window.snip.checkUpdate();`)
+  emitSelftestUpdateEvent({ type: 'not-available', version: initial.currentVersion })
+  const latest = await readStatus()
+  check(
+    '检查流程落到 latest 并落盘检查时间',
+    latest.phase === 'latest' &&
+      latest.latestVersion === initial.currentVersion &&
+      selftestUpdateCalls.checks === 1 &&
+      loadConfig().updateLastCheckAt > 0,
+    { latest, checks: selftestUpdateCalls.checks, lastCheckAt: loadConfig().updateLastCheckAt },
+  )
+
+  resetSelftestUpdateCalls()
+  await evalJson(wc, `window.__snipProgress.length = 0; return await window.snip.checkUpdate();`)
+  emitSelftestUpdateEvent({ type: 'available', version: '9.9.9', notes: '自检假版本' })
+  emitSelftestUpdateEvent({ type: 'progress', percent: 0, transferred: 0, total: 1000 })
+  emitSelftestUpdateEvent({ type: 'progress', percent: 50, transferred: 500, total: 1000 })
+  emitSelftestUpdateEvent({ type: 'progress', percent: 100, transferred: 1000, total: 1000 })
+  const downloading = await readStatus()
+  const progress = await evalJson<{ percent: number }[]>(wc, `return window.__snipProgress;`)
+  check(
+    '发现新版本自动下载并按节流推送进度',
+    downloading.phase === 'downloading' &&
+      downloading.latestVersion === '9.9.9' &&
+      selftestUpdateCalls.downloads === 1 &&
+      progress.length >= 2 &&
+      progress[progress.length - 1].percent === 100,
+    { downloading, progress, downloads: selftestUpdateCalls.downloads },
+  )
+
+  emitSelftestUpdateEvent({ type: 'downloaded', version: '9.9.9' })
+  const downloaded = await readStatus()
+  const install = await evalJson<{ ok: boolean }>(wc, `return await window.snip.installUpdate();`)
+  check(
+    '下载完成待用户显式确认安装',
+    downloaded.phase === 'downloaded' && install.ok && selftestUpdateCalls.installs === 1,
+    { downloaded, install, installs: selftestUpdateCalls.installs },
+  )
+
+  resetSelftestUpdateCalls()
+  await evalJson(wc, `return await window.snip.checkUpdate();`)
+  emitSelftestUpdateEvent({ type: 'available', version: '9.9.9', notes: null })
+  const cancelled = await evalJson<UpdateStatus>(wc, `return await window.snip.cancelUpdate();`)
+  check(
+    '取消下载回到 available',
+    cancelled.phase === 'available' && selftestUpdateCalls.cancels === 1 && selftestUpdateCalls.downloads === 1,
+    { cancelled, calls: { ...selftestUpdateCalls } },
+  )
+
+  resetSelftestUpdateCalls()
+  await evalJson(wc, `return await window.snip.setUpdateOptions({ autoDownload: false });`)
+  emitSelftestUpdateEvent({ type: 'available', version: '9.9.9', notes: null })
+  const held = await readStatus()
+  check(
+    '关闭自动下载后停留在 available',
+    held.phase === 'available' && selftestUpdateCalls.downloads === 0,
+    { held, downloads: selftestUpdateCalls.downloads },
+  )
+
+  emitSelftestUpdateEvent({ type: 'error', message: 'network timeout' })
+  const failed = await readStatus()
+  check(
+    '失败分支记录原因与时间并落盘',
+    failed.phase === 'error' &&
+      failed.error === 'network timeout' &&
+      failed.errorAt !== null &&
+      loadConfig().updateLastErrorReason === 'network timeout' &&
+      loadConfig().updateLastErrorAt > 0,
+    { failed, stored: { reason: loadConfig().updateLastErrorReason, at: loadConfig().updateLastErrorAt } },
+  )
+
+  await evalJson(wc, `return await window.snip.checkUpdate();`)
+  const recovering = await readStatus()
+  check('失败后再次检查回到 checking', recovering.phase === 'checking', recovering)
+  emitSelftestUpdateEvent({ type: 'not-available', version: recovering.currentVersion })
+
+  resetSelftestUpdateCalls()
+  const concurrent = await evalJson<UpdateStatus[]>(
+    wc,
+    `return await Promise.all([window.snip.checkUpdate(), window.snip.checkUpdate()]);`,
+  )
+  check(
+    '并发检查单飞，适配器只调用一次',
+    concurrent.length === 2 && selftestUpdateCalls.checks === 1,
+    { checks: selftestUpdateCalls.checks, phases: concurrent.map((item) => item.phase) },
+  )
+  emitSelftestUpdateEvent({ type: 'not-available', version: recovering.currentVersion })
+
+  await evalJson(
+    wc,
+    `window.__snipProgressOff?.(); window.__snipProgressOff = null;
+     return await window.snip.setUpdateOptions({ autoDownload: true, autoCheck: true });`,
+  )
+  win.hide()
+  await sleep(150)
 }
 
 async function testOcr(shotPath: string): Promise<void> {
@@ -2458,6 +2755,7 @@ export async function runSelftest(): Promise<void> {
     testPinPlacementMath()
     const settingsShot = join(app.getPath('temp'), 'snip-selftest-settings.png')
     await testHomeWindow(settingsShot)
+    await testUpdate()
     await testOcr(settingsShot)
     await testCopy(wc, outcomes, display.scaleFactor)
     await testSave(wc, outcomes, display.scaleFactor)
