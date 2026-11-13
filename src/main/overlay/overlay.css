@@ -99,6 +99,11 @@
   outline: 2px solid var(--snip-signal);
   outline-offset: 1px;
 }
+/* 橡皮擦不看颜色：明确置灰，避免用户误以为换色会生效 */
+.snip-annot-color:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 .snip-annot-divider {
   width: 1px;
   height: 16px;

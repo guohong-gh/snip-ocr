@@ -47,8 +47,20 @@ export class ElectronUpdaterAdapter implements UpdateAdapter {
   /** 首次使用时才加载库并绑定事件；失败时允许下次重试 */
   private ensureUpdater(): Promise<AppUpdater> {
     if (!this.loadPromise) {
-      this.loadPromise = import('electron-updater').then((mod) => {
-        const updater = mod.autoUpdater
+      this.loadPromise = import('electron-updater').then((imported) => {
+        // 打包后由 Node 原生 import 加载 CJS：cjs-module-lexer 不会把 getter 形式的
+        // autoUpdater 暴露成命名导出，必须回退到 default 对象
+        const mod = imported as unknown as {
+          autoUpdater?: AppUpdater
+          CancellationToken?: new () => CancellationToken
+          default?: {
+            autoUpdater?: AppUpdater
+            CancellationToken?: new () => CancellationToken
+          }
+        }
+        const updater = mod.autoUpdater ?? mod.default?.autoUpdater
+        const tokenCtor = mod.CancellationToken ?? mod.default?.CancellationToken
+        if (!updater) throw new Error('electron-updater 模块加载异常（缺少 autoUpdater 导出）')
         // 下载时机由 UpdateService 控制；退出时不自动安装，必须用户显式确认重启
         updater.autoDownload = false
         updater.autoInstallOnAppQuit = false
@@ -75,7 +87,7 @@ export class ElectronUpdaterAdapter implements UpdateAdapter {
           else this.emit({ type: 'error', message: error.message })
         })
         this.updater = updater
-        this.tokenCtor = mod.CancellationToken
+        this.tokenCtor = tokenCtor ?? null
       }).catch((error: unknown) => {
         this.loadPromise = null
         throw error

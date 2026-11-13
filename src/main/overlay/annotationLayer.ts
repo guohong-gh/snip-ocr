@@ -49,6 +49,16 @@ export interface AnnotationLayerDeps {
     widthPx: number,
   ) => AnnotationStroke
   appendPoint: (stroke: AnnotationStroke, point: AnnotationPoint) => void
+  /** 命中测试：与内核 isPointOnAnnotation 同一份实现 */
+  hitTest: (
+    stroke: AnnotationStroke,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+  ) => boolean
+  /** 整笔擦除：与内核 eraseAnnotationStrokes 同一份实现 */
+  erase: (strokes: AnnotationStroke[], isHit: (stroke: AnnotationStroke) => boolean) => number
   render: (
     ctx: AnnotationDrawContext,
     strokes: readonly AnnotationStroke[],
@@ -81,6 +91,8 @@ export function installAnnotationLayer(deps: AnnotationLayerDeps): AnnotationLay
     rect: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5.5" width="17" height="13" rx="1"/></svg>',
     ellipse:
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="12" rx="8.5" ry="6.5"/></svg>',
+    eraser:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13l-5.5 5.5a2 2 0 0 1-2.8 0L4.2 13a2 2 0 0 1 0-2.8L10 4.4a2 2 0 0 1 2.8 0l5.2 5.2a2 2 0 0 1 0 2.8z"/><path d="M8.5 9.5l6 6"/><path d="M7 20h12"/></svg>',
   }
   let strokes: AnnotationStroke[] = []
   let activeTool: string | null = null
@@ -89,6 +101,7 @@ export function installAnnotationLayer(deps: AnnotationLayerDeps): AnnotationLay
   let canvas: HTMLCanvasElement | null = null
   let draft: AnnotationStroke | null = null
   let drawing = false
+  let erasing = false
   let lastDisplay: unknown = null
   let raf = 0
   let committing = false
@@ -155,8 +168,10 @@ export function installAnnotationLayer(deps: AnnotationLayerDeps): AnnotationLay
       panel.querySelectorAll<HTMLButtonElement>('[data-snip-annot-tool]').forEach((button) => {
         button.classList.toggle('active', button.dataset.snipAnnotTool === activeTool)
       })
+      const colorDisabled = activeTool === 'eraser'
       panel.querySelectorAll<HTMLButtonElement>('[data-snip-annot-color]').forEach((button) => {
-        button.classList.toggle('active', button.dataset.snipAnnotColor === activeColor)
+        button.disabled = colorDisabled
+        button.classList.toggle('active', !colorDisabled && button.dataset.snipAnnotColor === activeColor)
       })
     }
     document.body.classList.toggle('snip-annotating', Boolean(activeTool) && hasSelection())
@@ -242,6 +257,16 @@ export function installAnnotationLayer(deps: AnnotationLayerDeps): AnnotationLay
     }
   }
 
+  /** 整笔擦除：按当前指针位置逐条命中，一次拖动可连续擦 */
+  function eraseAt(clientX: number, clientY: number): void {
+    const rect = hostRect()
+    if (!rect) return
+    const x = clientX - rect.left
+    const y = clientY - rect.top
+    const removed = deps.erase(strokes, (stroke) => deps.hitTest(stroke, x, y, rect.width, rect.height))
+    if (removed > 0) scheduleRedraw()
+  }
+
   function onPointerDown(event: PointerEvent): void {
     if (!activeTool || event.button !== 0) return
     const target = event.target
@@ -262,6 +287,11 @@ export function installAnnotationLayer(deps: AnnotationLayerDeps): AnnotationLay
     event.preventDefault()
     event.stopPropagation()
     if (!inside) return
+    if (activeTool === 'eraser') {
+      erasing = true
+      eraseAt(event.clientX, event.clientY)
+      return
+    }
     const point = normalizePoint(event.clientX, event.clientY, rect)
     draft = deps.createStroke(
       activeTool as AnnotationTool,
@@ -276,6 +306,12 @@ export function installAnnotationLayer(deps: AnnotationLayerDeps): AnnotationLay
   }
 
   function onPointerMove(event: PointerEvent): void {
+    if (erasing) {
+      event.preventDefault()
+      event.stopPropagation()
+      eraseAt(event.clientX, event.clientY)
+      return
+    }
     if (!drawing || !draft) return
     const rect = hostRect()
     if (!rect) return
@@ -286,6 +322,12 @@ export function installAnnotationLayer(deps: AnnotationLayerDeps): AnnotationLay
   }
 
   function finishStroke(event: PointerEvent): void {
+    if (erasing) {
+      erasing = false
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
     if (!drawing) return
     drawing = false
     draft = null
@@ -353,6 +395,7 @@ export function installAnnotationLayer(deps: AnnotationLayerDeps): AnnotationLay
       strokes = []
       draft = null
       drawing = false
+      erasing = false
       activeTool = null
       updatePanel()
       scheduleRedraw()
@@ -375,6 +418,7 @@ export function installAnnotationLayer(deps: AnnotationLayerDeps): AnnotationLay
       strokes = []
       draft = null
       drawing = false
+      erasing = false
       activeTool = null
       updatePanel()
       redraw()

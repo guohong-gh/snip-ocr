@@ -160,6 +160,8 @@ export class UpdateService {
   private fail(message: string): void {
     const reason = message.trim() || '未知错误'
     const at = Date.now()
+    // 原始错误只进日志；界面用 classifyUpdateError 归一后的文案
+    console.error('[snip] update failed:', reason)
     this.setStatus({ phase: 'error', error: reason, errorAt: at })
     this.options.persist({ updateLastErrorReason: reason, updateLastErrorAt: at })
   }

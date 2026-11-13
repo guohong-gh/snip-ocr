@@ -55,10 +55,15 @@ export async function pickCustomIcon(): Promise<SetHotkeyResult> {
   }
 }
 
+/** 登录项写入与回读必须使用同一组 path/args，否则读不到刚写入的状态 */
+function loginItemOptions(): { path: string; args: string[] } {
+  return { path: process.execPath, args: ['--hidden'] }
+}
+
 export function readAutostart(): boolean {
   if (!app.isPackaged) return false
   try {
-    return app.getLoginItemSettings().openAtLogin
+    return app.getLoginItemSettings(loginItemOptions()).openAtLogin
   } catch {
     return false
   }
@@ -67,7 +72,8 @@ export function readAutostart(): boolean {
 export function setAutostart(enabled: boolean): SetHotkeyResult {
   if (!app.isPackaged) return { ok: false, error: '仅安装版支持开机自启' }
   try {
-    app.setLoginItemSettings({ openAtLogin: enabled, path: process.execPath, args: ['--hidden'] })
+    app.setLoginItemSettings({ openAtLogin: enabled, ...loginItemOptions() })
+    // 写入后按同一组参数回读，开关状态以系统真实值为准
     appState.autostart = readAutostart()
     broadcastState()
     return { ok: true }

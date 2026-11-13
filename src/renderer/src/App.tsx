@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import appIconUrl from './assets/app-icon.png'
 import HotkeyRecorder from './HotkeyRecorder'
 import { prettyAccelerator } from './accelerator'
 import {
@@ -16,6 +17,7 @@ import {
   type UpdateStatus,
 } from '@shared/ipc'
 import { toolIconFor, TOOL_LABELS, type ToolKey } from '@shared/icons'
+import { classifyUpdateError } from '@shared/updateError'
 
 type Tab = 'hotkeys' | 'general' | 'icons'
 
@@ -37,15 +39,8 @@ interface HotkeySettingProps {
 }
 
 function BrandMark() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square">
-      <path d="M3 8V3h5" />
-      <path d="M16 3h5v5" />
-      <path d="M21 16v5h-5" />
-      <path d="M8 21H3v-5" />
-      <path d="M12 9v6M9 12h6" opacity="0.5" />
-    </svg>
-  )
+  // 标题栏直接使用应用图标本身，避免图标文件换了而界面仍是旧线框
+  return <img className="brand-mark-img" src={appIconUrl} alt="" draggable={false} />
 }
 
 function SettingsIcon() {
@@ -231,7 +226,7 @@ function describeUpdate(update: UpdateStatus | null, progress: UpdateProgress | 
   if (!update) return '未检查更新'
   if (!update.supported) return '便携版或开发版不支持在线更新，请手动下载新版本'
   const failure = update.error
-    ? `上次检查更新失败：${update.error}${update.errorAt ? `（${formatHistoryTime(update.errorAt)}）` : ''}`
+    ? `上次检查更新失败：${classifyUpdateError(update.error).reason}${update.errorAt ? `（${formatHistoryTime(update.errorAt)}）` : ''}`
     : '未检查更新'
   switch (update.phase) {
     case 'checking':
@@ -253,6 +248,12 @@ function describeUpdate(update: UpdateStatus | null, progress: UpdateProgress | 
     default:
       return failure
   }
+}
+
+/** 失败时给一条可执行的下一步；原始错误细节只留在主进程日志 */
+function describeUpdateHint(update: UpdateStatus | null): string | null {
+  if (!update?.error || update.phase !== 'error') return null
+  return classifyUpdateError(update.error).hint
 }
 
 export default function App() {
@@ -353,6 +354,7 @@ export default function App() {
   const updatePhase = update?.phase ?? 'idle'
   const checking = updatePhase === 'checking'
   const updateText = describeUpdate(update, updateProgress)
+  const updateHint = describeUpdateHint(update)
   const progressPercent = Math.max(0, Math.min(100, Math.round(updateProgress?.percent ?? 0)))
   const updateUnsupported = update?.supported === false
 
@@ -737,6 +739,7 @@ export default function App() {
                           >
                             {updateText}
                           </div>
+                          {updateHint ? <div className="update-hint">{updateHint}</div> : null}
                         </div>
                         {updateUnsupported ? (
                           <button type="button" className="update-btn" disabled>
@@ -750,6 +753,7 @@ export default function App() {
                               void window.snip.cancelUpdate()
                             }}
                           >
+                            <span className="spinner" aria-hidden="true" />
                             取消下载
                           </button>
                         ) : updatePhase === 'downloaded' ? (
@@ -784,7 +788,14 @@ export default function App() {
                               void window.snip.checkUpdate()
                             }}
                           >
-                            {checking ? '检查中…' : '检查更新'}
+                            {checking ? (
+                              <>
+                                <span className="spinner" aria-hidden="true" />
+                                检查中…
+                              </>
+                            ) : (
+                              '检查更新'
+                            )}
                           </button>
                         )}
                       </div>

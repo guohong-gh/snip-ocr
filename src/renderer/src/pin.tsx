@@ -11,6 +11,8 @@ import {
   ANNOTATION_TOOLS,
   appendAnnotationPoint,
   createAnnotationStroke,
+  eraseAnnotationStrokes,
+  isPointOnAnnotation,
   renderAnnotations,
   type AnnotationColor,
   type AnnotationStroke,
@@ -48,9 +50,18 @@ function ToolIcon({ tool }: { tool: AnnotationTool }) {
       </svg>
     )
   }
+  if (tool === 'ellipse') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <ellipse cx="12" cy="12" rx="8.5" ry="6.5" />
+      </svg>
+    )
+  }
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <ellipse cx="12" cy="12" rx="8.5" ry="6.5" />
+      <path d="M18 13l-5.5 5.5a2 2 0 0 1-2.8 0L4.2 13a2 2 0 0 1 0-2.8L10 4.4a2 2 0 0 1 2.8 0l5.2 5.2a2 2 0 0 1 0 2.8z" />
+      <path d="M8.5 9.5l6 6" />
+      <path d="M7 20h12" />
     </svg>
   )
 }
@@ -90,6 +101,8 @@ function PinView() {
   const flashTimer = useRef<number | null>(null)
   const strokesRef = useRef<AnnotationStroke[]>([])
   const thumbTimer = useRef<number | null>(null)
+  const erasing = useRef(false)
+  const erased = useRef(false)
 
   useEffect(() => {
     strokesRef.current = strokes
@@ -262,6 +275,25 @@ function PinView() {
   const onToolSelect = (next: AnnotationTool): void => {
     setTool((prev) => (prev === next ? null : next))
     draft.current = null
+    erasing.current = false
+  }
+
+  /** 橡皮擦：整笔删除当前指针命中的笔迹，一次拖动可连续擦 */
+  const eraseAt = (event: ReactPointerEvent<HTMLElement>): void => {
+    const canvas = annotCanvasRef.current
+    const point = annotationPoint(event)
+    if (!canvas || !point) return
+    const rect = canvas.getBoundingClientRect()
+    const width = Math.max(1, rect.width)
+    const height = Math.max(1, rect.height)
+    const next = strokesRef.current.slice()
+    const removed = eraseAnnotationStrokes(next, (stroke) =>
+      isPointOnAnnotation(stroke, point.x * width, point.y * height, width, height),
+    )
+    if (removed === 0) return
+    strokesRef.current = next
+    erased.current = true
+    setStrokes(next)
   }
 
   /** 导出标注版：按原图像素重绘图片 + 笔迹，复制/保存都走这里 */
@@ -338,6 +370,13 @@ function PinView() {
       if (!point) return
       event.preventDefault()
       event.stopPropagation()
+      if (tool === 'eraser') {
+        erasing.current = true
+        erased.current = false
+        eraseAt(event)
+        capturePointer(event.currentTarget, event.pointerId)
+        return
+      }
       draft.current = createAnnotationStroke(
         tool,
         ANNOTATION_COLORS[color],
@@ -358,6 +397,12 @@ function PinView() {
   }
 
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (tool === 'eraser' && erasing.current) {
+      event.preventDefault()
+      event.stopPropagation()
+      eraseAt(event)
+      return
+    }
     if (tool && draft.current) {
       const point = annotationPoint(event)
       if (!point) return
@@ -393,6 +438,13 @@ function PinView() {
 
   const onPointerUp = (): void => {
     if (tool) {
+      if (tool === 'eraser') {
+        erasing.current = false
+        // 擦除后也要回传一次，否则列表面板仍是旧缩略图
+        if (erased.current) scheduleThumbnail()
+        erased.current = false
+        return
+      }
       draft.current = null
       scheduleThumbnail()
       return
@@ -402,6 +454,12 @@ function PinView() {
 
   const onPointerCancel = (): void => {
     if (tool) {
+      if (tool === 'eraser') {
+        erasing.current = false
+        if (erased.current) scheduleThumbnail()
+        erased.current = false
+        return
+      }
       draft.current = null
       scheduleThumbnail()
       return
@@ -525,8 +583,9 @@ function PinView() {
             <button
               key={name}
               type="button"
-              className={`pin-color${color === name ? ' active' : ''}`}
+              className={`pin-color${tool !== 'eraser' && color === name ? ' active' : ''}`}
               data-pin-color={name}
+              disabled={tool === 'eraser'}
               style={{ backgroundColor: ANNOTATION_COLORS[name] }}
               aria-label={ANNOTATION_COLOR_LABELS[name]}
               title={ANNOTATION_COLOR_LABELS[name]}

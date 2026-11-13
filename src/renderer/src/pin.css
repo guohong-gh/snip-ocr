@@ -253,6 +253,12 @@ body {
     0 0 0 2px var(--tone-panel-bright);
 }
 
+/* 橡皮擦不看颜色：明确置灰，避免用户误以为换色会生效 */
+.pin-color:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .pin-hint {
   overflow: hidden;
   max-width: 64px;

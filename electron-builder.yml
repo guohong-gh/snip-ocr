@@ -28,6 +28,15 @@ files:
   - '!plugins/**'
   - '!.translate-a1/**'
   - '!.translate-spike/**'
+  # 本地杂物：开发记录、技术指南、设计预览与抓取包，不进安装包
+  - '!2026-11-12/**'
+  - '!snip-ocr-tech-guide.html'
+  - '!RELEASE_NOTES_*.md'
+  - '!.scratch/**'
+  - '!.design-preview/**'
+  - '!.trae-html-share-packages/**'
+  # docs 仅供开发者阅读（用户指南/ADR/报告），运行时无引用
+  - '!docs/**'
 asar: true
 asarUnpack:
   - '**/*.node'

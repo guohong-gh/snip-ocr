@@ -24,6 +24,8 @@ import {
   ANNOTATION_TOOLS,
   appendAnnotationPoint,
   createAnnotationStroke,
+  eraseAnnotationStrokes,
+  isPointOnAnnotation,
   renderAnnotations,
 } from '@shared/annotation'
 
@@ -74,6 +76,8 @@ function buildScript(icons: Record<ToolKey, string>): string {
       strokeWidth: ANNOT_STROKE_WIDTH,
       createStroke: ${createAnnotationStroke.toString()},
       appendPoint: ${appendAnnotationPoint.toString()},
+      hitTest: ${isPointOnAnnotation.toString()},
+      erase: ${eraseAnnotationStrokes.toString()},
       render: ${renderAnnotations.toString()},
     });
     installSidebar();

@@ -21,7 +21,7 @@ export const ANNOTATION_COLOR_LABELS: Record<AnnotationColor, string> = {
   blue: '蓝色',
 }
 
-export const ANNOTATION_TOOLS = ['pen', 'rect', 'ellipse'] as const
+export const ANNOTATION_TOOLS = ['pen', 'rect', 'ellipse', 'eraser'] as const
 
 export type AnnotationTool = (typeof ANNOTATION_TOOLS)[number]
 
@@ -29,6 +29,7 @@ export const ANNOTATION_TOOL_LABELS: Record<AnnotationTool, string> = {
   pen: '画笔',
   rect: '方框',
   ellipse: '圆形',
+  eraser: '橡皮擦',
 }
 
 /** 画笔基础线宽（CSS px，绘制时按所在画布宽度换算成比例存储） */
@@ -150,25 +151,10 @@ export function annotationBounds(stroke: AnnotationStroke): {
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
 }
 
-function distanceToSegment(
-  px: number,
-  py: number,
-  ax: number,
-  ay: number,
-  bx: number,
-  by: number,
-): number {
-  const dx = bx - ax
-  const dy = by - ay
-  const lengthSquared = dx * dx + dy * dy
-  if (lengthSquared <= 0) return Math.hypot(px - ax, py - ay)
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSquared))
-  return Math.hypot(px - (ax + dx * t), py - (ay + dy * t))
-}
-
 /**
  * 命中测试：point 与 width/height 使用像素坐标。
  * 画笔命中折线，方框命中四条边，圆形命中椭圆轮廓；容差已包含线宽。
+ * 自包含：距离计算为局部函数，供遮罩注入时直接 toString() 复用。
  */
 export function isPointOnAnnotation(
   stroke: AnnotationStroke,
@@ -178,6 +164,21 @@ export function isPointOnAnnotation(
   height: number,
   tolerance = 5,
 ): boolean {
+  function distanceToSegment(
+    px: number,
+    py: number,
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+  ): number {
+    const dx = bx - ax
+    const dy = by - ay
+    const lengthSquared = dx * dx + dy * dy
+    if (lengthSquared <= 0) return Math.hypot(px - ax, py - ay)
+    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSquared))
+    return Math.hypot(px - (ax + dx * t), py - (ay + dy * t))
+  }
   if (stroke.points.length === 0) return false
   const hitRange = Math.max(1, stroke.width * width) / 2 + Math.max(0, tolerance)
   const toPixel = (point: AnnotationPoint): { x: number; y: number } => ({
@@ -226,6 +227,25 @@ export function isPointOnAnnotation(
   return false
 }
 
+/**
+ * 整笔擦除：原地删除命中笔迹并返回删除数量。
+ * isHit 由调用方传入（贴图窗用 isPointOnAnnotation，遮罩侧注入同一份），
+ * 本函数因此保持自包含，可安全参与 toString() 注入。
+ */
+export function eraseAnnotationStrokes(
+  strokes: AnnotationStroke[],
+  isHit: (stroke: AnnotationStroke) => boolean,
+): number {
+  let removed = 0
+  for (let index = strokes.length - 1; index >= 0; index -= 1) {
+    if (isHit(strokes[index])) {
+      strokes.splice(index, 1)
+      removed += 1
+    }
+  }
+  return removed
+}
+
 /** 把笔迹栅格化到 width × height 的画布；自包含，供注入脚本与贴图窗共用 */
 export function renderAnnotations(
   ctx: AnnotationDrawContext,
@@ -236,7 +256,7 @@ export function renderAnnotations(
   if (!strokes || strokes.length === 0 || width < 1 || height < 1) return
   ctx.save()
   for (const stroke of strokes) {
-    if (!stroke || !stroke.points || stroke.points.length === 0) continue
+    if (!stroke || !stroke.points || stroke.points.length === 0 || stroke.tool === 'eraser') continue
     ctx.lineWidth = Math.max(0.5, stroke.width * width)
     ctx.strokeStyle = stroke.color
     ctx.lineCap = 'round'

@@ -353,5 +353,6 @@ function onShortcutError(error: unknown): void {
 export const screenshotService = new ScreenshotService()
 
 export function trayIconPath(): string {
-  return join(app.getAppPath(), 'assets', process.platform === 'win32' ? 'tray.ico' : 'tray.png')
+  // 托盘与应用共用同一套图标；icon.ico 内含 16–256px 多尺寸，托盘会取最合适的一档
+  return join(app.getAppPath(), 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png')
 }

@@ -168,9 +168,11 @@ textarea:focus-visible,
   color: var(--signal);
 }
 
-.brand-mark svg {
+.brand-mark-img {
   width: 18px;
   height: 18px;
+  border-radius: 4px;
+  object-fit: cover;
 }
 
 .title {
@@ -712,10 +714,11 @@ textarea:focus-visible,
   font-size: 9.5px;
 }
 
-/* 底部速查：平时收起，悬停或键盘聚焦时浮现，覆盖内容区但不占布局 */
+/* 底部速查：平时收起，悬停或键盘聚焦时浮现，覆盖内容区但不占布局。
+   right 留出滚动条宽度，否则底部 34px 会盖住滚动条滑块使其无法拖动 */
 .foot-zone {
   position: absolute;
-  right: 0;
+  right: 7px;
   bottom: 0;
   left: 0;
   z-index: 30;
@@ -935,6 +938,8 @@ textarea:focus-visible,
   color: var(--ink-2);
   font-size: 10.5px;
   line-height: 1.5;
+  /* OCR 失败信息可能包含超长命令行，强制折行，避免撑出横向滚动条 */
+  overflow-wrap: anywhere;
 }
 
 /* 快捷键录制框 */
@@ -1206,9 +1211,43 @@ textarea:focus-visible,
   color: var(--signal);
 }
 
+/* 失败原因的下一步提示：比错误标题弱一档，避免界面堆技术细节 */
+.update-hint {
+  color: var(--ink-3);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* 检查与下载期间的明确反馈，避免“点了没反应” */
+.spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 1.8s;
+  }
+}
+
 .update-btn {
+  display: inline-flex;
   height: 28px;
   flex: none;
+  align-items: center;
+  gap: 5px;
   padding: 0 12px;
   border: 1px solid var(--rule-2);
   border-radius: 2px;

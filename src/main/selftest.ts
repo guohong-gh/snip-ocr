@@ -11,10 +11,13 @@ import {
   type UpdateStatus,
 } from '@shared/ipc'
 import { compareVersions } from '@shared/version'
+import { classifyUpdateError } from '@shared/updateError'
+import { readAutostart, setAutostart } from './settingsActions'
 import {
   ANNOTATION_COLORS,
   ANNOTATION_COLOR_ORDER,
   ANNOTATION_TOOLS,
+  eraseAnnotationStrokes,
   annotationBounds,
   appendAnnotationPoint,
   createAnnotationStroke,
@@ -843,18 +846,31 @@ async function testHomeWindow(shotPath: string): Promise<void> {
 
   emitSelftestUpdateEvent({ type: 'error', message: 'network timeout' })
   await sleep(180)
-  const errorUi = await evalJson<{ state: string; text: string; errorClass: boolean }>(
+  const errorUi = await evalJson<{
+    state: string
+    text: string
+    hint: string
+    button: string
+    errorClass: boolean
+  }>(
     win.webContents,
     `const section = document.querySelector('.update-section');
      return {
        state: section?.getAttribute('data-state') || '',
        text: (section?.querySelector('.update-status')?.textContent || '').trim(),
+       hint: (section?.querySelector('.update-hint')?.textContent || '').trim(),
+       button: (section?.querySelector('.update-btn')?.textContent || '').trim(),
        errorClass: Boolean(section?.querySelector('.update-status--error'))
      };`,
   )
   check(
-    '失败态显示原因与时间且按钮可重试',
-    errorUi.state === 'error' && errorUi.text.includes('network timeout') && errorUi.errorClass,
+    '失败态显示可读原因、时间、下一步且按钮可重试',
+    errorUi.state === 'error' &&
+      errorUi.text.includes('连接更新服务器超时') &&
+      /（\d{4}-\d{2}-\d{2} \d{2}:\d{2}）/.test(errorUi.text) &&
+      errorUi.hint.length > 0 &&
+      errorUi.button === '检查更新' &&
+      errorUi.errorClass,
     errorUi,
   )
 
@@ -920,6 +936,58 @@ async function testUpdate(): Promise<void> {
   )
 
   check('自检未构造真实 electron-updater 适配器', constructionCount === 0, { constructionCount })
+
+  const errorCases: { raw: string; expected: string }[] = [
+    { raw: 'getaddrinfo ENOTFOUND api.github.com', expected: '无法解析更新服务器地址' },
+    { raw: 'ETIMEDOUT: request timed out', expected: '连接更新服务器超时' },
+    { raw: 'read ECONNRESET', expected: '与更新服务器的连接被重置' },
+    { raw: 'Cannot find latest.yml in the latest release artifacts', expected: '发布页缺少 latest.yml 清单' },
+    { raw: 'sha512 checksum mismatch', expected: '下载的安装包校验失败' },
+  ]
+  const errorResults = errorCases.map((item) => ({
+    ...item,
+    actual: classifyUpdateError(item.raw).reason,
+  }))
+  check(
+    '更新失败原因分类可读',
+    errorResults.every((item) => item.actual === item.expected),
+    errorResults,
+  )
+  check(
+    '更新失败都带一条可执行的下一步',
+    errorCases.every((item) => classifyUpdateError(item.raw).hint.length > 0),
+    {},
+  )
+
+  const rendererAssets = join(app.getAppPath(), 'out', 'renderer', 'assets')
+  const rendererCss = existsSync(rendererAssets)
+    ? readdirSync(rendererAssets)
+        .filter((name) => name.endsWith('.css'))
+        .map((name) => readFileSync(join(rendererAssets, name), 'utf8'))
+        .join('\n')
+    : ''
+  check(
+    '检查与下载都有旋转加载样式',
+    rendererCss.includes('.spinner') && rendererCss.includes('@keyframes spin'),
+    { hasSpinner: rendererCss.includes('.spinner'), hasKeyframes: rendererCss.includes('@keyframes spin') },
+  )
+
+  check('开机自启回读为布尔值', typeof readAutostart() === 'boolean', { autostart: readAutostart() })
+  if (!app.isPackaged) {
+    const autostartApplied = setAutostart(true)
+    check(
+      '开发态不写系统登录项并明确拒绝',
+      autostartApplied.ok === false && Boolean(autostartApplied.error),
+      autostartApplied,
+    )
+    const settingsSource = readFileSync(join(app.getAppPath(), 'src/main/settingsActions.ts'), 'utf8')
+    check(
+      '自启动写入与回读共用同一组 path/args',
+      /getLoginItemSettings\(loginItemOptions\(\)\)/.test(settingsSource) &&
+        /setLoginItemSettings\(\{ openAtLogin: enabled, \.\.\.loginItemOptions\(\) \}\)/.test(settingsSource),
+      {},
+    )
+  }
 
   if (!app.isPackaged) {
     check(
@@ -1635,12 +1703,12 @@ async function testEscape(wc: WebContents, outcomes: CaptureOutcome[]): Promise<
 
 function testAnnotationKernel(): void {
   check(
-    '标注仅提供红黄蓝三色与三种工具',
+    '标注仅提供红黄蓝三色与四种工具（含橡皮擦）',
     ANNOTATION_COLOR_ORDER.length === 3 &&
       Object.keys(ANNOTATION_COLORS).length === 3 &&
       ANNOTATION_COLOR_ORDER.every((name) => /^#[0-9a-f]{6}$/i.test(ANNOTATION_COLORS[name])) &&
-      ANNOTATION_TOOLS.length === 3 &&
-      ANNOTATION_TOOLS.join(',') === 'pen,rect,ellipse',
+      ANNOTATION_TOOLS.length === 4 &&
+      ANNOTATION_TOOLS.join(',') === 'pen,rect,ellipse,eraser',
     { colors: ANNOTATION_COLORS, tools: ANNOTATION_TOOLS },
   )
 
@@ -1676,12 +1744,39 @@ function testAnnotationKernel(): void {
     { points: ellipse.points },
   )
 
+  const eraseList = [pen, rect, ellipse]
+  const missed = eraseAnnotationStrokes(
+    eraseList,
+    (stroke) => isPointOnAnnotation(stroke, 900, 900, 1000, 1000, 2),
+  )
+  check('橡皮擦未命中不删除笔迹', missed === 0 && eraseList.length === 3, { missed })
+
+  const removedPen = eraseAnnotationStrokes(
+    eraseList,
+    // x=150 只落在画笔上；方框上边从 x=200 开始，避免同时命中
+    (stroke) => isPointOnAnnotation(stroke, 150, 200, 1000, 1000, 2),
+  )
+  check(
+    '橡皮擦命中整笔删除',
+    removedPen === 1 && eraseList.length === 2 && !eraseList.includes(pen),
+    { removedPen, left: eraseList.map((stroke) => stroke.tool) },
+  )
+
+  const removedRect = eraseAnnotationStrokes(
+    eraseList,
+    (stroke) => isPointOnAnnotation(stroke, 200, 450, 1000, 1000, 2),
+  )
+  check(
+    '一次拖动可连续擦除多条笔迹',
+    removedRect === 1 && eraseList.length === 1 && eraseList[0] === ellipse,
+    { removedRect, left: eraseList.map((stroke) => stroke.tool) },
+  )
+
   const state = {
     lineWidth: 0,
     lineCap: '',
     lineJoin: '',
-    strokeStyle: '' as string | object,
-    strokes: [] as string[],
+    strokeStyle: '' as string | object,    strokes: [] as string[],
     moves: 0,
     lines: 0,
     rects: 0,
@@ -2442,8 +2537,8 @@ async function testAnnotation(wc: WebContents, outcomes: CaptureOutcome[]): Prom
      };`,
   )
   check(
-    '标注面板提供 3 工具/3 颜色且动作按钮仍为 6',
-    panel.visible && panel.tools === 3 && panel.colors === 3 && panel.actions === 6,
+    '标注面板提供 4 工具/3 颜色且动作按钮仍为 6',
+    panel.visible && panel.tools === 4 && panel.colors === 3 && panel.actions === 6,
     panel,
   )
 
@@ -2548,6 +2643,58 @@ async function testAnnotation(wc: WebContents, outcomes: CaptureOutcome[]): Prom
       annotatedBlue > plainBlue + 20,
     { plainBlue, annotatedBlue, plainSize: plainImage.getSize(), annotatedSize: annotatedImage.getSize() },
   )
+
+  // 橡皮擦：整笔删除命中笔迹，未命中不删，导出位图里对应像素消失
+  const eraserUi = await evalJson<{ tools: number; active: boolean; colorDisabled: boolean }>(
+    wc,
+    `const tool = document.querySelector('[data-snip-annot-tool="eraser"]');
+     if (!tool) return { tools: document.querySelectorAll('[data-snip-annot-tool]').length, active: false, colorDisabled: false };
+     tool.click();
+     const colors = Array.from(document.querySelectorAll('[data-snip-annot-color]'));
+     return {
+       tools: document.querySelectorAll('[data-snip-annot-tool]').length,
+       active: tool.classList.contains('active'),
+       colorDisabled: colors.length === 3 && colors.every((node) => node.disabled),
+     };`,
+  )
+  check(
+    '标注面板提供橡皮擦且激活后颜色失效',
+    eraserUi.tools === 4 && eraserUi.active && eraserUi.colorDisabled,
+    eraserUi,
+  )
+
+  // 未命中：在选区底部空白处划过，不应删除任何笔迹
+  await dragSelect(
+    wc,
+    [Math.round(rect.x + rect.width * 0.5), Math.round(rect.y + rect.height - 12)],
+    [Math.round(rect.x + rect.width * 0.55), Math.round(rect.y + rect.height - 12)],
+  )
+  const afterMiss = await evalJson<{ count: number }>(
+    wc,
+    `return { count: (window.__snipAnnotStrokes?.() || []).length };`,
+  )
+  check('橡皮擦未命中不删除笔迹', afterMiss.count === 3, afterMiss)
+
+  // 命中画笔所在横线：整笔删除
+  const hitY = Math.round(rect.y + rect.height / 2)
+  await dragSelect(
+    wc,
+    [Math.round(rect.x + rect.width / 2), hitY],
+    [Math.round(rect.x + rect.width / 2 + 12), hitY],
+  )
+  const afterErase = await evalJson<{ count: number; tools: string[] }>(
+    wc,
+    `const list = window.__snipAnnotStrokes?.() || [];
+     return { count: list.length, tools: list.map((s) => s.tool) };`,
+  )
+  check('橡皮擦命中后整笔删除', afterErase.count === 2 && !afterErase.tools.includes('pen'), afterErase)
+
+  const erasedCrop = await evalJson<string>(
+    wc,
+    `return window.__snipCropSelection({ annotations: true });`,
+  )
+  const erasedBlue = countColorPixels(nativeImage.createFromBuffer(dataUrlToBuffer(erasedCrop)), ANNOT_BLUE)
+  check('擦除后导出位图里对应像素消失', annotatedBlue - erasedBlue > 20, { annotatedBlue, erasedBlue })
 
   // 长图：首帧叠加笔迹，后续帧由 longShot 传入 false 保持干净
   const frameSource = await evalJson<OverlayFrameSource | null>(
@@ -2695,8 +2842,8 @@ async function testAnnotation(wc: WebContents, outcomes: CaptureOutcome[]): Prom
      };`,
   )
   check(
-    '贴图窗口提供画布、3 工具、3 颜色与复制/保存',
-    pinPanel.tools === 3 && pinPanel.colors === 3 && pinPanel.canvas && pinPanel.actions === 2,
+    '贴图窗口提供画布、4 工具、3 颜色与复制/保存',
+    pinPanel.tools === 4 && pinPanel.colors === 3 && pinPanel.canvas && pinPanel.actions === 2,
     pinPanel,
   )
 
@@ -2740,6 +2887,58 @@ async function testAnnotation(wc: WebContents, outcomes: CaptureOutcome[]): Prom
       Math.abs(pinTo.x - pinFrom.x) <= 1 &&
       Math.abs(pinTo.y - pinFrom.y) <= 1,
     { pinCanvasPixels, from: pinFrom, to: pinTo },
+  )
+
+  const pinThumbBefore = pinService.list()[0]?.thumbUrl ?? null
+  await evalJson<boolean>(
+    pinWc,
+    `document.querySelector('[data-pin-tool="eraser"]')?.click(); return true;`,
+  )
+  await sleep(120)
+  const pinEraser = await evalJson<{ tools: number; active: boolean; colorDisabled: boolean }>(
+    pinWc,
+    `const tool = document.querySelector('[data-pin-tool="eraser"]');
+     const colors = Array.from(document.querySelectorAll('[data-pin-color]'));
+     return {
+       tools: document.querySelectorAll('[data-pin-tool]').length,
+       active: Boolean(tool?.classList.contains('active')),
+       colorDisabled: colors.length === 3 && colors.every((node) => node.disabled),
+     };`,
+  )
+  check(
+    '贴图窗口提供橡皮擦且激活后颜色失效',
+    pinEraser.tools === 4 && pinEraser.active && pinEraser.colorDisabled,
+    pinEraser,
+  )
+
+  const pinErasedDrag = await dispatchPinPointer(pinWc, '.pin-root', [
+    [80, 120],
+    [160, 140],
+    [260, 180],
+  ])
+  await sleep(350)
+  const pinCanvasAfterErase = await evalJson<number>(
+    pinWc,
+    `const canvas = document.querySelector('.pin-annot-canvas');
+     if (!canvas) return 0;
+     const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+     let count = 0;
+     for (let i = 3; i < data.length; i += 4) if (data[i] > 0) count += 1;
+     return count;`,
+  )
+  const pinThumbAfter = pinService.list()[0]?.thumbUrl ?? null
+  check(
+    '贴图侧橡皮擦整笔删除并刷新缩略图',
+    pinErasedDrag &&
+      pinCanvasAfterErase < pinCanvasPixels &&
+      Boolean(pinThumbBefore) &&
+      Boolean(pinThumbAfter) &&
+      pinThumbAfter !== pinThumbBefore,
+    {
+      beforePixels: pinCanvasPixels,
+      afterPixels: pinCanvasAfterErase,
+      thumbChanged: pinThumbAfter !== pinThumbBefore,
+    },
   )
 
   clipboard.clear()
