@@ -37,6 +37,7 @@ files:
   - '!.trae-html-share-packages/**'
   # docs 仅供开发者阅读（用户指南/ADR/报告），运行时无引用
   - '!docs/**'
+  - '!GLOSSARY.md'
 asar: true
 asarUnpack:
   - '**/*.node'
