@@ -8,7 +8,7 @@
 
 ```bash
 npm install
-npm run icon       # 重新生成安装图标与托盘图标
+npm run icon       # 重新生成托盘图标（应用图标为静态资源，不在此脚本内）
 npm run dev        # 开发模式（vite 热更新 + Electron）
 npm run build      # 类型检查 + 打包 out/
 npm run selftest   # 打包后跑一遍自动化验收（会真的弹遮罩）
@@ -70,7 +70,8 @@ npm run pack       # 生成安装包 → dist/
 - 「贴图」或 `Alt+P` 后生成 `snip-pin` 浮窗：无边框、透明、始终置顶、不进任务栏与 Alt+Tab（Windows 用 `type: 'toolbar'` → `WS_EX_TOOLWINDOW`）。
 - 内容区只有截图本身（独立 [pin.html](src/renderer/pin.html) + 原生 `<img>`），边框用 `box-shadow` 叠在图片上，不占布局。
 - 初始尺寸按 `图片物理像素 / scaleFactor` 换算成 DIP，125%/150% 下内容区 × scaleFactor = 截图像素。
-- 拖拽移动；8 向拖边缘/角调整窗口大小（悬停显示四角手柄）；滚轮只缩放窗口内图片内容（0.25×–8×，以光标为锚点），标题条显示百分比，`Ctrl+0` 回到 100%；双击/Esc 关闭；悬停右上角 × 单张关闭；多张并存；托盘「关闭所有贴图 (N)」一次清空。
+- 拖拽移动；8 向拖边缘/角调整窗口大小（悬停显示四角手柄）；滚轮只缩放窗口内图片内容（0.25×–8×，以光标为锚点），标题条显示百分比，`Ctrl+0` 回到 100%；Esc 关闭；悬停右上角 × 单张关闭；多张并存；托盘「关闭所有贴图 (N)」一次清空。
+- **贴图列表**：首页「贴图列表」在主窗右侧展开独立面板（跟随主窗移动，可收起）；逐张显示带笔迹的缩略图、尺寸与状态（显示中/已隐藏、是否置顶），支持「贴到最前」（一次性置前，不改变原置顶属性）与「隐藏 / 恢复」。隐藏只收起窗口、不销毁，恢复后回到原位置，笔迹与缩放状态保留；列表数据来自主进程实例，隐藏的贴图仍在列表中。新建、关闭、隐藏、恢复都会实时同步。首页「关闭全部」需二次确认。
 - 图片按窗口等比完整显示，边框与图片共用同一组 DPR 取整后的几何值，窗口比例不一致或滚轮缩放时也紧贴图片；缩小由浏览器按目标设备像素重新栅格化（不使用 `will-change` 缓存层拉伸），保持清晰。
 - 悬停时显示「贴图窗口」标题条（覆盖在图片上，不挤占布局）。
 - 图片经临时 PNG 落盘（`<安装目录>\data\pins\pin-*.png`）后以 `snip-pin://` 协议传给贴图页，IPC 不传大数组；关闭时异步删除，启动时清理残留。
@@ -124,14 +125,14 @@ npm run pack       # 生成安装包 → dist/
 
 ```
 src/main/        index(托盘/启动/IPC) homeWindow(主窗) screenshot(截图/工具栏) overlayUi(遮罩注入)
-                 stitch(长图纵向拼接) pin(贴图窗口) pinHistory(截图历史) ocr(Windows OCR) config selftest
-src/preload/     contextBridge，只暴露 window.snip
-src/renderer/    主窗 + 设置弹窗（index.html/App.tsx）+ 独立贴图页（pin.html/pin.tsx/pin.css）
+                 stitch(长图纵向拼接) pin(贴图窗口) pinListWindow(贴图列表面板) pinHistory(截图历史) ocr(Windows OCR) config selftest
+src/preload/     contextBridge，主窗 window.snip / 贴图页 window.snipPin / 列表面板 window.snipPinList
+src/renderer/    主窗 + 设置弹窗（index.html/App.tsx）+ 独立贴图页（pin.html/pin.tsx/pin.css）+ 贴图列表（pin-list.html/pinList.tsx）
 src/shared/      ipc.ts（通道与类型唯一定义）、icons.ts（工具栏图标）
-scripts/gen-icon.mjs  生成安装图标与托盘图标
+scripts/gen-icon.mjs  生成托盘图标
 ```
 
-截图/工具栏/侧栏逻辑集中在 [src/main/screenshot.ts](src/main/screenshot.ts) 与 [src/main/overlayUi.ts](src/main/overlayUi.ts)；贴图在 [src/main/pin.ts](src/main/pin.ts)；OCR 在 [src/main/ocr.ts](src/main/ocr.ts)。
+截图/工具栏/侧栏逻辑集中在 [src/main/screenshot.ts](src/main/screenshot.ts) 与 [src/main/overlayUi.ts](src/main/overlayUi.ts)；贴图在 [src/main/pin.ts](src/main/pin.ts)，贴图列表面板在 [src/main/pinListWindow.ts](src/main/pinListWindow.ts)；OCR 在 [src/main/ocr.ts](src/main/ocr.ts)。
 
 ## 已知限制
 

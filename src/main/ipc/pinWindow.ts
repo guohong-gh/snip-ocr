@@ -21,6 +21,9 @@ export function registerPinWindowIpc(): string[] {
     pinService.resizeMove(event.sender.id, x, y)
   })
   ipcMain.on(IPC.pinResizeEnd, (event) => pinService.resizeEnd(event.sender.id))
+  ipcMain.handle(IPC.pinCopy, (event, data: unknown) => pinService.copyFor(event.sender.id, data))
+  ipcMain.handle(IPC.pinSave, (event, data: unknown) => pinService.saveFor(event.sender.id, data))
+  ipcMain.on(IPC.pinThumbnail, (event, data: unknown) => pinService.setThumb(event.sender.id, data))
   return [
     IPC.pinMeta,
     IPC.pinReady,
@@ -31,5 +34,8 @@ export function registerPinWindowIpc(): string[] {
     IPC.pinResizeStart,
     IPC.pinResizeMove,
     IPC.pinResizeEnd,
+    IPC.pinCopy,
+    IPC.pinSave,
+    IPC.pinThumbnail,
   ]
 }

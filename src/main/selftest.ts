@@ -12,6 +12,17 @@ import {
 } from '@shared/ipc'
 import { compareVersions } from '@shared/version'
 import {
+  ANNOTATION_COLORS,
+  ANNOTATION_COLOR_ORDER,
+  ANNOTATION_TOOLS,
+  annotationBounds,
+  appendAnnotationPoint,
+  createAnnotationStroke,
+  isPointOnAnnotation,
+  renderAnnotations,
+  type AnnotationDrawContext,
+} from '@shared/annotation'
+import {
   OVERLAY_ACTION_PREFIX,
   OVERLAY_COPY_PREFIX,
   OVERLAY_HUD_RECT_PREFIX,
@@ -53,6 +64,7 @@ import {
   pinTempDir,
   resolvePinImagePath,
 } from './pin'
+import { collapsePinList, getPinListWindow, togglePinList } from './pinListWindow'
 import { listPinHistory, pinHistoryDir, recordPinHistory, setPinHistoryLimit } from './pinHistory'
 import { loadConfig, normalizeConfig, realUserDataPath, saveConfig, selftestDataDir } from './config'
 import { constructionCount } from './update/electronUpdaterAdapter'
@@ -504,6 +516,14 @@ async function testHomeWindow(shotPath: string): Promise<void> {
     pinResizeStart: 'snip:pin-resize-start',
     pinResizeMove: 'snip:pin-resize-move',
     pinResizeEnd: 'snip:pin-resize-end',
+    pinCopy: 'snip:pin-copy',
+    pinSave: 'snip:pin-save',
+    pinThumbnail: 'snip:pin-thumbnail',
+    pinListGet: 'snip:pin-list-get',
+    pinListChanged: 'snip:pin-list-changed',
+    pinListToggle: 'snip:pin-list-toggle',
+    pinListAction: 'snip:pin-list-action',
+    pinListClose: 'snip:pin-list-close',
     pinHistoryList: 'snip:pin-history-list',
     pinHistoryChanged: 'snip:pin-history-changed',
     pinHistoryDelete: 'snip:pin-history-delete',
@@ -535,6 +555,7 @@ async function testHomeWindow(shotPath: string): Promise<void> {
     IPC.homeOpenSettings,
     IPC.updateStatus,
     IPC.updateProgress,
+    IPC.pinListChanged,
   ])
   const expectedInboundChannels: string[] = Object.values(IPC).filter(
     (channel) => !outboundChannels.has(channel),
@@ -1612,6 +1633,149 @@ async function testEscape(wc: WebContents, outcomes: CaptureOutcome[]): Promise<
   })
 }
 
+function testAnnotationKernel(): void {
+  check(
+    '标注仅提供红黄蓝三色与三种工具',
+    ANNOTATION_COLOR_ORDER.length === 3 &&
+      Object.keys(ANNOTATION_COLORS).length === 3 &&
+      ANNOTATION_COLOR_ORDER.every((name) => /^#[0-9a-f]{6}$/i.test(ANNOTATION_COLORS[name])) &&
+      ANNOTATION_TOOLS.length === 3 &&
+      ANNOTATION_TOOLS.join(',') === 'pen,rect,ellipse',
+    { colors: ANNOTATION_COLORS, tools: ANNOTATION_TOOLS },
+  )
+
+  const pen = createAnnotationStroke('pen', ANNOTATION_COLORS.red, 1000, { x: 0.1, y: 0.2 }, 3)
+  appendAnnotationPoint(pen, { x: 0.6, y: 0.2 })
+  check(
+    '画笔命中折线且避开远处',
+    isPointOnAnnotation(pen, 350, 200, 1000, 1000, 2) &&
+      !isPointOnAnnotation(pen, 500, 600, 1000, 1000, 2),
+    { points: pen.points, width: pen.width },
+  )
+
+  const rect = createAnnotationStroke('rect', ANNOTATION_COLORS.yellow, 1000, { x: 0.2, y: 0.2 }, 3)
+  appendAnnotationPoint(rect, { x: 0.8, y: 0.7 })
+  const rectBounds = annotationBounds(rect)
+  check(
+    '方框命中四边、避开内部与外部',
+    isPointOnAnnotation(rect, 200, 450, 1000, 1000, 2) &&
+      isPointOnAnnotation(rect, 500, 200, 1000, 1000, 2) &&
+      !isPointOnAnnotation(rect, 500, 450, 1000, 1000, 2) &&
+      !isPointOnAnnotation(rect, 100, 450, 1000, 1000, 2),
+    { bounds: rectBounds },
+  )
+
+  const ellipse = createAnnotationStroke('ellipse', ANNOTATION_COLORS.blue, 1000, { x: 0.2, y: 0.2 }, 3)
+  appendAnnotationPoint(ellipse, { x: 0.8, y: 0.6 })
+  check(
+    '圆形命中椭圆轮廓、避开中心与角落',
+    isPointOnAnnotation(ellipse, 500, 200, 1000, 1000, 2) &&
+      isPointOnAnnotation(ellipse, 200, 400, 1000, 1000, 2) &&
+      !isPointOnAnnotation(ellipse, 500, 400, 1000, 1000, 2) &&
+      !isPointOnAnnotation(ellipse, 220, 220, 1000, 1000, 2),
+    { points: ellipse.points },
+  )
+
+  const state = {
+    lineWidth: 0,
+    lineCap: '',
+    lineJoin: '',
+    strokeStyle: '' as string | object,
+    strokes: [] as string[],
+    moves: 0,
+    lines: 0,
+    rects: 0,
+    ellipses: 0,
+  }
+  const ctx: AnnotationDrawContext = {
+    save: () => undefined,
+    restore: () => undefined,
+    beginPath: () => undefined,
+    moveTo: () => {
+      state.moves += 1
+    },
+    lineTo: () => {
+      state.lines += 1
+    },
+    stroke: () => {
+      state.strokes.push(String(state.strokeStyle))
+    },
+    rect: () => {
+      state.rects += 1
+    },
+    ellipse: () => {
+      state.ellipses += 1
+    },
+    get lineWidth() {
+      return state.lineWidth
+    },
+    set lineWidth(value: number) {
+      state.lineWidth = value
+    },
+    get lineCap() {
+      return state.lineCap
+    },
+    set lineCap(value: string) {
+      state.lineCap = value
+    },
+    get lineJoin() {
+      return state.lineJoin
+    },
+    set lineJoin(value: string) {
+      state.lineJoin = value
+    },
+    get strokeStyle() {
+      return state.strokeStyle
+    },
+    set strokeStyle(value: string | object) {
+      state.strokeStyle = value
+    },
+  }
+  renderAnnotations(ctx, [pen, rect, ellipse], 200, 100)
+  check(
+    '矩形/椭圆/画笔栅格化使用对应颜色与线宽',
+    state.strokes.length === 3 &&
+      state.strokes.join(',') ===
+        [ANNOTATION_COLORS.red, ANNOTATION_COLORS.yellow, ANNOTATION_COLORS.blue].join(',') &&
+      state.moves === 1 &&
+      state.lines >= 1 &&
+      state.rects === 1 &&
+      state.ellipses === 1 &&
+      Math.abs(state.lineWidth - 0.6) < 1e-6,
+    state,
+  )
+
+  const empty = { strokes: [] as string[], rects: 0, ellipses: 0, moves: 0 }
+  const emptyCtx: AnnotationDrawContext = {
+    save: () => undefined,
+    restore: () => undefined,
+    beginPath: () => undefined,
+    moveTo: () => {
+      empty.moves += 1
+    },
+    lineTo: () => undefined,
+    stroke: () => {
+      empty.strokes.push('stroke')
+    },
+    rect: () => {
+      empty.rects += 1
+    },
+    ellipse: () => {
+      empty.ellipses += 1
+    },
+    lineWidth: 0,
+    lineCap: '',
+    lineJoin: '',
+    strokeStyle: '',
+  }
+  renderAnnotations(emptyCtx, [], 200, 100)
+  check(
+    '空笔迹不产生任何绘制调用',
+    empty.strokes.length === 0 && empty.rects === 0 && empty.ellipses === 0 && empty.moves === 0,
+    empty,
+  )
+}
+
 function testPinPlacementMath(): void {
   const sample = join(pinTempDir(), 'pin-123-uuid.png')
   check('贴图图片 URL 可往返解析', resolvePinImagePath(pinImageUrl(sample)) === resolve(sample), {
@@ -1689,12 +1853,12 @@ async function dispatchPinPointer(
     if (!target) return false;
     const points = ${JSON.stringify(points)};
     const base = { bubbles: true, cancelable: true, pointerId: 99, pointerType: 'mouse', isPrimary: true };
-    target.dispatchEvent(new PointerEvent('pointerdown', { ...base, button: 0, buttons: 1, screenX: points[0][0], screenY: points[0][1] }));
+    target.dispatchEvent(new PointerEvent('pointerdown', { ...base, button: 0, buttons: 1, screenX: points[0][0], screenY: points[0][1], clientX: points[0][0], clientY: points[0][1] }));
     for (let i = 1; i < points.length; i += 1) {
-      target.dispatchEvent(new PointerEvent('pointermove', { ...base, button: -1, buttons: 1, screenX: points[i][0], screenY: points[i][1] }));
+      target.dispatchEvent(new PointerEvent('pointermove', { ...base, button: -1, buttons: 1, screenX: points[i][0], screenY: points[i][1], clientX: points[i][0], clientY: points[i][1] }));
     }
     const last = points[points.length - 1];
-    target.dispatchEvent(new PointerEvent('pointerup', { ...base, button: 0, buttons: 0, screenX: last[0], screenY: last[1] }));
+    target.dispatchEvent(new PointerEvent('pointerup', { ...base, button: 0, buttons: 0, screenX: last[0], screenY: last[1], clientX: last[0], clientY: last[1] }));
     return true;
   `
   return evalJson<boolean>(wc, code)
@@ -1754,7 +1918,7 @@ async function testPin(wc: WebContents, outcomes: CaptureOutcome[], display: Pin
       mainKeys: string[]
     }>(
       pinWin.webContents,
-      `const methods = ['meta', 'ready', 'close', 'dragStart', 'dragMove', 'dragEnd', 'resizeStart', 'resizeMove', 'resizeEnd'];
+      `const methods = ['meta', 'ready', 'close', 'dragStart', 'dragMove', 'dragEnd', 'resizeStart', 'resizeMove', 'resizeEnd', 'copy', 'save', 'thumbnail'];
        return {
          hasMain: typeof window.snip !== 'undefined',
          hasPin: typeof window.snipPin === 'object',
@@ -1766,7 +1930,7 @@ async function testPin(wc: WebContents, outcomes: CaptureOutcome[], display: Pin
     )
     check(
       '贴图页只暴露 snipPin，不暴露主窗 API',
-      pinBridge.hasMain === false && pinBridge.hasPin && pinBridge.pinMethods.length === 9,
+      pinBridge.hasMain === false && pinBridge.hasPin && pinBridge.pinMethods.length === 12,
       pinBridge,
     )
     const bounds = pinWin.getBounds()
@@ -1955,8 +2119,12 @@ async function testPin(wc: WebContents, outcomes: CaptureOutcome[], display: Pin
       pinWin.webContents.sendInputEvent({ type: 'mouseUp', x: cx, y: cy, button: 'left', clickCount: 1 })
       await sleep(60)
     }
-    const doubleClosed = await waitForValue(() => (pinWin.isDestroyed() ? true : null), 3000)
-    check('双击关闭贴图窗口', doubleClosed === true, {})
+    const doubleClosed = await waitForValue(() => (pinWin.isDestroyed() ? true : null), 800)
+    check('双击不再关闭贴图窗口', doubleClosed === null && !pinWin.isDestroyed(), {
+      destroyed: pinWin.isDestroyed(),
+    })
+    pinService.closeFor(pinWin.webContents.id)
+    await waitForValue(() => (pinWin.isDestroyed() ? true : null), 3000)
 
     await startAndDrag(wc)
     const escClicked = await clickToolbarButton(wc, '贴图')
@@ -1997,6 +2165,88 @@ async function testPin(wc: WebContents, outcomes: CaptureOutcome[], display: Pin
     check('多张贴图可同时存在', twoPins === true, { pins: pinService.count })
     await sleep(600)
 
+    // 贴图列表：数据源是主进程实例，隐藏只收起窗口
+    const listBefore = pinService.list()
+    check('贴图列表列出全部实例', listBefore.length === 2, { list: listBefore.map((item) => item.id) })
+    const thumbsReady = await waitForValue(() => {
+      const pinnedList = pinService.list()
+      return pinnedList.length === 2 && pinnedList.every((item) => item.thumbUrl) ? pinnedList : null
+    }, 8000)
+    check(
+      '贴图列表带合成缩略图',
+      thumbsReady !== null &&
+        thumbsReady.every((item) => String(item.thumbUrl).startsWith('data:image/png;base64,')),
+      { thumbs: thumbsReady?.map((item) => item.thumbUrl?.slice(0, 24)) ?? null },
+    )
+
+    const hideTarget = pinService.list()[0]
+    const hideTargetTop = hideTarget.alwaysOnTop
+    pinService.setHidden(hideTarget.id, true)
+    await sleep(300)
+    const hiddenWindow = findPinWindows().find((win) => !win.isVisible())
+    check(
+      '隐藏后实例仍在且窗口不可见',
+      pinService.count === 2 &&
+        hiddenWindow !== undefined &&
+        Boolean(pinService.list().find((item) => item.id === hideTarget.id && item.hidden)),
+      { pins: pinService.count, hiddenWindow: hiddenWindow?.id ?? null, list: pinService.list() },
+    )
+    if (hiddenWindow) {
+      const hiddenBounds = hiddenWindow.getBounds()
+      pinService.setHidden(hideTarget.id, false)
+      await sleep(300)
+      const restoredBounds = hiddenWindow.getBounds()
+      const restoredPin = pinService.list().find((item) => item.id === hideTarget.id)
+      check(
+        '恢复后贴在原位且状态回收',
+        hiddenWindow.isVisible() &&
+          restoredBounds.x === hiddenBounds.x &&
+          restoredBounds.y === hiddenBounds.y &&
+          !restoredPin?.hidden &&
+          restoredPin?.alwaysOnTop === hideTargetTop,
+        { hiddenBounds, restoredBounds, visible: hiddenWindow.isVisible(), top: restoredPin?.alwaysOnTop },
+      )
+    }
+
+    const topsBefore = findPinWindows().map((win) => ({ id: win.id, top: win.isAlwaysOnTop() }))
+    pinService.bringToFront(pinService.list()[0].id)
+    await sleep(200)
+    const topsAfter = findPinWindows().map((win) => ({ id: win.id, top: win.isAlwaysOnTop() }))
+    check(
+      '提到最前不改变置顶属性',
+      topsBefore.length === topsAfter.length &&
+        topsBefore.every((item, index) => item.id === topsAfter[index].id && item.top === topsAfter[index].top),
+      { topsBefore, topsAfter },
+    )
+
+    const thumbsBefore = new Map(pinService.list().map((item) => [item.id, item.thumbUrl]))
+    const drawWindow = findPinWindows().find((win) => win.isVisible())
+    if (drawWindow) {
+      await evalJson<boolean>(
+        drawWindow.webContents,
+        `document.querySelector('[data-pin-tool="pen"]')?.click(); return true;`,
+      )
+      await sleep(120)
+      const drawBounds = drawWindow.getBounds()
+      const x1 = Math.round(drawBounds.width * 0.25)
+      const y1 = Math.round(drawBounds.height * 0.3)
+      const x2 = Math.round(drawBounds.width * 0.65)
+      const y2 = Math.round(drawBounds.height * 0.7)
+      await dispatchPinPointer(drawWindow.webContents, '.pin-root', [
+        [x1, y1],
+        [x2, y2],
+      ])
+      const thumbUpdated = await waitForValue(() => {
+        const changed = pinService.list().find((item) => item.thumbUrl && item.thumbUrl !== thumbsBefore.get(item.id))
+        return changed ?? null
+      }, 8000)
+      check('落笔后列表缩略图更新', thumbUpdated !== null, {
+        updated: thumbUpdated?.thumbUrl?.slice(0, 24) ?? null,
+      })
+    } else {
+      check('落笔后列表缩略图更新', false, { reason: '没有可见贴图窗口可落笔' })
+    }
+
     const pinWindows = findPinWindows()
     const hasCloseButton =
       pinWindows.length === 2 &&
@@ -2031,6 +2281,75 @@ async function testPin(wc: WebContents, outcomes: CaptureOutcome[], display: Pin
       homeStatus.text.includes(`贴图 ${pinService.count} 张`) && !homeStatus.lastDisabled,
       homeStatus,
     )
+
+    // 贴图列表面板：打开列出实例，新建/关闭实时同步，收起只是隐藏
+    togglePinList()
+    const listWindow = await waitForValue(() => getPinListWindow() ?? null, 5000)
+    await sleep(800)
+    let panelItems = -1
+    if (listWindow) {
+      panelItems = await evalJson<number>(
+        listWindow.webContents,
+        `return document.querySelectorAll('.pin-list-item').length;`,
+      )
+    }
+    check('贴图列表面板列出全部贴图', listWindow !== null && panelItems === pinService.list().length, {
+      panelItems,
+      expected: pinService.list().length,
+    })
+
+    const wcIdsBeforeCreate = new Set(findPinWindows().map((win) => win.webContents.id))
+    const listCountBeforeCreate = pinService.list().length
+    await createPinAgain()
+    const createdLive = await waitForValue(
+      () => (pinService.list().length === listCountBeforeCreate + 1 ? true : null),
+      8000,
+    )
+    let panelAfterCreate = -1
+    for (let attempt = 0; listWindow && attempt < 50; attempt += 1) {
+      await sleep(100)
+      panelAfterCreate = await evalJson<number>(
+        listWindow.webContents,
+        `return document.querySelectorAll('.pin-list-item').length;`,
+      )
+      if (panelAfterCreate === listCountBeforeCreate + 1) break
+    }
+    check(
+      '新建贴图后列表实时增加',
+      createdLive === true && panelAfterCreate === listCountBeforeCreate + 1,
+      { listCount: pinService.list().length, panelAfterCreate },
+    )
+
+    const createdWindow = findPinWindows().find((win) => !wcIdsBeforeCreate.has(win.webContents.id))
+    if (createdWindow) {
+      // 等新窗口真正显示后再关闭，避免命中「显示前被关闭」的失败路径
+      await waitForValue(() => (createdWindow.isVisible() ? true : null), 5000)
+      pinService.closeFor(createdWindow.webContents.id)
+      const removedLive = await waitForValue(
+        () => (pinService.list().length === listCountBeforeCreate ? true : null),
+        5000,
+      )
+      let panelAfterClose = -1
+      for (let attempt = 0; listWindow && attempt < 50; attempt += 1) {
+        await sleep(100)
+        panelAfterClose = await evalJson<number>(
+          listWindow.webContents,
+          `return document.querySelectorAll('.pin-list-item').length;`,
+        )
+        if (panelAfterClose === listCountBeforeCreate) break
+      }
+      check(
+        '关闭贴图后列表实时减少',
+        removedLive === true && panelAfterClose === listCountBeforeCreate,
+        { listCount: pinService.list().length, panelAfterClose },
+      )
+    }
+
+    collapsePinList()
+    await sleep(250)
+    check('贴图列表面板可收起', listWindow !== null && listWindow.isVisible() === false, {
+      visible: listWindow?.isVisible() ?? null,
+    })
     home.hide()
     await sleep(200)
 
@@ -2087,6 +2406,373 @@ async function testConfirmCopy(wc: WebContents, outcomes: CaptureOutcome[]): Pro
     clicked && ready && Boolean(copied) && pinService.count === 0 && findOverlayWindow() === undefined,
     { clicked, ready, libraryDisabled, retried, pins: pinService.count, copied: copied ?? null },
   )
+}
+
+const ANNOT_BLUE: [number, number, number] = [47, 111, 237]
+
+/** nativeImage.toBitmap() 为 BGRA，统计接近指定 RGB 的像素数 */
+function countColorPixels(image: Electron.NativeImage, rgb: [number, number, number], tolerance = 12): number {
+  if (image.isEmpty()) return 0
+  const bitmap = image.toBitmap()
+  let count = 0
+  for (let index = 0; index < bitmap.length; index += 4) {
+    if (
+      Math.abs(bitmap[index + 2] - rgb[0]) <= tolerance &&
+      Math.abs(bitmap[index + 1] - rgb[1]) <= tolerance &&
+      Math.abs(bitmap[index] - rgb[2]) <= tolerance
+    ) {
+      count += 1
+    }
+  }
+  return count
+}
+
+async function testAnnotation(wc: WebContents, outcomes: CaptureOutcome[]): Promise<void> {
+  clipboard.clear()
+  const before = outcomes.length
+  await startAndDrag(wc)
+  const panel = await evalJson<{ visible: boolean; tools: number; colors: number; actions: number }>(
+    wc,
+    `const panel = document.querySelector('.snip-annot-panel');
+     return {
+       visible: Boolean(panel) && getComputedStyle(panel).display !== 'none',
+       tools: document.querySelectorAll('[data-snip-annot-tool]').length,
+       colors: document.querySelectorAll('[data-snip-annot-color]').length,
+       actions: document.querySelectorAll('.snip-tool-btn').length,
+     };`,
+  )
+  check(
+    '标注面板提供 3 工具/3 颜色且动作按钮仍为 6',
+    panel.visible && panel.tools === 3 && panel.colors === 3 && panel.actions === 6,
+    panel,
+  )
+
+  const activated = await evalJson<boolean>(
+    wc,
+    `const tool = document.querySelector('[data-snip-annot-tool="pen"]');
+     const color = document.querySelector('[data-snip-annot-color="blue"]');
+     if (!tool || !color) return false;
+     tool.click();
+     color.click();
+     return tool.classList.contains('active') && color.classList.contains('active');`,
+  )
+  check('启用画笔并选择蓝色', activated, {})
+
+  let rect = await evalJson<CaptureRegion>(
+    wc,
+    `const r = document.querySelector('.screenshots-canvas').getBoundingClientRect();
+     return { x: r.x, y: r.y, width: r.width, height: r.height };`,
+  )
+  const midY = Math.round(rect.y + rect.height / 2)
+  await dragSelect(wc, [Math.round(rect.x + 20), midY], [Math.round(rect.x + rect.width - 20), midY])
+  let strokes = await evalJson<{ count: number; tools: string[]; colors: string[] }>(
+    wc,
+    `const list = window.__snipAnnotStrokes?.() || [];
+     return { count: list.length, tools: list.map((s) => s.tool), colors: list.map((s) => s.color) };`,
+  )
+  check(
+    '画笔拖拽生成一笔蓝色笔迹',
+    strokes.count === 1 && strokes.tools[0] === 'pen' && strokes.colors[0] === ANNOTATION_COLORS.blue,
+    strokes,
+  )
+
+  const toggledOff = await evalJson<boolean>(
+    wc,
+    `const tool = document.querySelector('[data-snip-annot-tool="pen"]');
+     if (!tool) return false;
+     tool.click();
+     return !tool.classList.contains('active');`,
+  )
+  const beforeMove = rect
+  const center: [number, number] = [Math.round(rect.x + rect.width / 2), midY]
+  await dragSelect(wc, center, [center[0] + 30, center[1] + 20])
+  rect = await evalJson<CaptureRegion>(
+    wc,
+    `const r = document.querySelector('.screenshots-canvas').getBoundingClientRect();
+     return { x: r.x, y: r.y, width: r.width, height: r.height };`,
+  )
+  const afterMove = await evalJson<{ count: number }>(
+    wc,
+    `return { count: (window.__snipAnnotStrokes?.() || []).length };`,
+  )
+  check(
+    '退出画笔后拖拽恢复选区移动且不新增笔迹',
+    toggledOff &&
+      Math.abs(rect.x - beforeMove.x - 30) <= 3 &&
+      Math.abs(rect.y - beforeMove.y - 20) <= 3 &&
+      afterMove.count === 1,
+    { from: beforeMove, to: rect, strokes: afterMove.count },
+  )
+
+  await evalJson<boolean>(
+    wc,
+    `document.querySelector('[data-snip-annot-tool="rect"]')?.click(); return true;`,
+  )
+  await dragSelect(
+    wc,
+    [Math.round(rect.x + 30), Math.round(rect.y + 30)],
+    [Math.round(rect.x + rect.width * 0.55), Math.round(rect.y + rect.height * 0.55)],
+  )
+  await evalJson<boolean>(
+    wc,
+    `document.querySelector('[data-snip-annot-tool="ellipse"]')?.click(); return true;`,
+  )
+  await dragSelect(
+    wc,
+    [Math.round(rect.x + rect.width * 0.55), Math.round(rect.y + rect.height * 0.55)],
+    [Math.round(rect.x + rect.width - 30), Math.round(rect.y + rect.height - 30)],
+  )
+  strokes = await evalJson<{ count: number; tools: string[]; colors: string[] }>(
+    wc,
+    `const list = window.__snipAnnotStrokes?.() || [];
+     return { count: list.length, tools: list.map((s) => s.tool), colors: list.map((s) => s.color) };`,
+  )
+  check(
+    '方框与圆形工具也能落笔',
+    strokes.count === 3 && strokes.tools.includes('rect') && strokes.tools.includes('ellipse'),
+    strokes,
+  )
+
+  const crops = await evalJson<{ plain: string; annotated: string }>(
+    wc,
+    `return { plain: window.__snipCropSelection(), annotated: window.__snipCropSelection({ annotations: true }) };`,
+  )
+  const plainImage = nativeImage.createFromBuffer(dataUrlToBuffer(crops.plain))
+  const annotatedImage = nativeImage.createFromBuffer(dataUrlToBuffer(crops.annotated))
+  const plainBlue = countColorPixels(plainImage, ANNOT_BLUE)
+  const annotatedBlue = countColorPixels(annotatedImage, ANNOT_BLUE)
+  check(
+    '标注烧进导出位图，OCR 裁剪仍为原图',
+    crops.plain !== crops.annotated &&
+      annotatedImage.getSize().width === plainImage.getSize().width &&
+      annotatedBlue > plainBlue + 20,
+    { plainBlue, annotatedBlue, plainSize: plainImage.getSize(), annotatedSize: annotatedImage.getSize() },
+  )
+
+  // 长图：首帧叠加笔迹，后续帧由 longShot 传入 false 保持干净
+  const frameSource = await evalJson<OverlayFrameSource | null>(
+    wc,
+    `const img = document.querySelector('.screenshots-background-image');
+     if (!img || !img.src || !img.naturalWidth || !img.naturalHeight) return null;
+     return {
+       src: img.src,
+       width: img.naturalWidth,
+       height: img.naturalHeight,
+       viewportWidth: window.innerWidth,
+       viewportHeight: window.innerHeight,
+     };`,
+  )
+  const framePlain = frameSource
+    ? await callOverlayLongFrame(wc, frameSource, rect, false)
+    : null
+  const frameAnnotated = frameSource
+    ? await callOverlayLongFrame(wc, frameSource, rect, true)
+    : null
+  const framePlainBlue = framePlain ? countColorPixels(framePlain.image, ANNOT_BLUE) : 0
+  const frameAnnotatedBlue = frameAnnotated ? countColorPixels(frameAnnotated.image, ANNOT_BLUE) : 0
+  check(
+    '长图首帧可叠加笔迹，未标注帧保持干净',
+    framePlain !== null &&
+      frameAnnotated !== null &&
+      frameAnnotated.image.getSize().width === framePlain.image.getSize().width &&
+      frameAnnotatedBlue > framePlainBlue + 20,
+    {
+      framePlainBlue,
+      frameAnnotatedBlue,
+      plainSize: framePlain?.image.getSize() ?? null,
+      annotatedSize: frameAnnotated?.image.getSize() ?? null,
+    },
+  )
+
+  const confirmClicked = await clickToolbarButton(wc, '确定')
+  const copied = await waitForValue(
+    () => outcomes.slice(before).find((outcome) => outcome.kind === 'copied') ?? null,
+    4000,
+  )
+  await sleep(300)
+  const clip = clipboard.readImage()
+  const clipBlue = countColorPixels(clip, ANNOT_BLUE)
+  check(
+    '「确定」复制到剪贴板的是带笔迹位图',
+    confirmClicked &&
+      copied !== null &&
+      !clip.isEmpty() &&
+      clip.getSize().width === annotatedImage.getSize().width &&
+      clipBlue > plainBlue + 20,
+    { clip: clip.getSize(), clipBlue, plainBlue },
+  )
+
+  // 另存为必须写出带笔迹的位图
+  const saveBefore = outcomes.length
+  await startAndDrag(wc)
+  await evalJson<boolean>(
+    wc,
+    `document.querySelector('[data-snip-annot-tool="pen"]')?.click();
+     document.querySelector('[data-snip-annot-color="blue"]')?.click();
+     return true;`,
+  )
+  const saveRect = await evalJson<CaptureRegion>(
+    wc,
+    `const r = document.querySelector('.screenshots-canvas').getBoundingClientRect();
+     return { x: r.x, y: r.y, width: r.width, height: r.height };`,
+  )
+  await dragSelect(
+    wc,
+    [Math.round(saveRect.x + 20), Math.round(saveRect.y + saveRect.height / 2)],
+    [Math.round(saveRect.x + saveRect.width - 20), Math.round(saveRect.y + saveRect.height / 2)],
+  )
+  const saveCrops = await evalJson<{ plain: string; annotated: string }>(
+    wc,
+    `return { plain: window.__snipCropSelection(), annotated: window.__snipCropSelection({ annotations: true }) };`,
+  )
+  const savePlainBlue = countColorPixels(
+    nativeImage.createFromBuffer(dataUrlToBuffer(saveCrops.plain)),
+    ANNOT_BLUE,
+  )
+  const saveTarget = join(app.getPath('temp'), 'snip-selftest-annotation-save.png')
+  const dialogSlot = dialog as unknown as SaveDialogSlot
+  const originalSaveDialog = dialogSlot.showSaveDialog
+  dialogSlot.showSaveDialog = async () => ({ canceled: false, filePath: saveTarget })
+  try {
+    const saveClicked = await clickToolbarButton(wc, '另存为')
+    const saved = await waitForValue(
+      () => outcomes.slice(saveBefore).find((outcome) => outcome.kind === 'saved') ?? null,
+      5000,
+    )
+    await sleep(300)
+    const savedBlue = existsSync(saveTarget)
+      ? countColorPixels(nativeImage.createFromPath(saveTarget), ANNOT_BLUE)
+      : 0
+    check(
+      '「另存为」写出带笔迹的位图',
+      saveClicked && saved !== null && savedBlue > savePlainBlue + 20,
+      { saveTarget, savedBlue, savePlainBlue },
+    )
+  } finally {
+    dialogSlot.showSaveDialog = originalSaveDialog
+    if (existsSync(saveTarget)) rmSync(saveTarget, { force: true })
+  }
+
+  // 贴图侧：窗口内绘制、复制标注版
+  const pinBefore = outcomes.length
+  await startAndDrag(wc)
+  await evalJson<boolean>(
+    wc,
+    `document.querySelector('[data-snip-annot-tool="pen"]')?.click();
+     document.querySelector('[data-snip-annot-color="blue"]')?.click();
+     return true;`,
+  )
+  const pinRect = await evalJson<CaptureRegion>(
+    wc,
+    `const r = document.querySelector('.screenshots-canvas').getBoundingClientRect();
+     return { x: r.x, y: r.y, width: r.width, height: r.height };`,
+  )
+  await dragSelect(
+    wc,
+    [Math.round(pinRect.x + 20), Math.round(pinRect.y + pinRect.height / 2)],
+    [Math.round(pinRect.x + pinRect.width - 20), Math.round(pinRect.y + pinRect.height / 2)],
+  )
+  const pinClicked = await clickToolbarButton(wc, '贴图')
+  const pinWin = await waitForValue(() => findPinWindow() ?? null, 8000)
+  const pinnedOutcome = await waitForValue(
+    () => outcomes.slice(pinBefore).find((outcome) => outcome.kind === 'pinned') ?? null,
+    4000,
+  )
+  check('带笔迹贴图成功', pinClicked && pinWin !== null && pinnedOutcome !== null, {
+    pinClicked,
+    pinned: pinnedOutcome,
+  })
+  if (!pinWin) return
+  await sleep(800)
+  const pinWc = pinWin.webContents
+  const pinPanel = await evalJson<{ tools: number; colors: number; canvas: boolean; actions: number }>(
+    pinWc,
+    `return {
+       tools: document.querySelectorAll('[data-pin-tool]').length,
+       colors: document.querySelectorAll('[data-pin-color]').length,
+       canvas: Boolean(document.querySelector('.pin-annot-canvas')),
+       actions: document.querySelectorAll('[data-pin-action]').length,
+     };`,
+  )
+  check(
+    '贴图窗口提供画布、3 工具、3 颜色与复制/保存',
+    pinPanel.tools === 3 && pinPanel.colors === 3 && pinPanel.canvas && pinPanel.actions === 2,
+    pinPanel,
+  )
+
+  await evalJson<boolean>(
+    pinWc,
+    `const tool = document.querySelector('[data-pin-tool="pen"]');
+     const color = document.querySelector('[data-pin-color="blue"]');
+     if (!tool || !color) return false;
+     tool.click();
+     color.click();
+     return true;`,
+  )
+  await sleep(120)
+  const pinActivated = await evalJson<boolean>(
+    pinWc,
+    `return Boolean(document.querySelector('[data-pin-tool="pen"]')?.classList.contains('active')) &&
+       Boolean(document.querySelector('[data-pin-color="blue"]')?.classList.contains('active'));`,
+  )
+  const pinFrom = pinWin.getBounds()
+  const pinDrawn = await dispatchPinPointer(pinWc, '.pin-root', [
+    [80, 120],
+    [160, 140],
+    [260, 180],
+  ])
+  await sleep(250)
+  const pinTo = pinWin.getBounds()
+  const pinCanvasPixels = await evalJson<number>(
+    pinWc,
+    `const canvas = document.querySelector('.pin-annot-canvas');
+     if (!canvas) return 0;
+     const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+     let count = 0;
+     for (let i = 3; i < data.length; i += 4) if (data[i] > 0) count += 1;
+     return count;`,
+  )
+  check(
+    '贴图窗口画笔落笔且不拖动窗口',
+    pinActivated &&
+      pinDrawn &&
+      pinCanvasPixels > 40 &&
+      Math.abs(pinTo.x - pinFrom.x) <= 1 &&
+      Math.abs(pinTo.y - pinFrom.y) <= 1,
+    { pinCanvasPixels, from: pinFrom, to: pinTo },
+  )
+
+  clipboard.clear()
+  const historyBefore = (await listPinHistory()).length
+  const pinMeta = await readPinMeta(pinWin)
+  const copyClicked = await evalJson<boolean>(
+    pinWc,
+    `const button = document.querySelector('[data-pin-action="copy"]');
+     if (!button) return false;
+     button.click();
+     return true;`,
+  )
+  await sleep(500)
+  const pinClip = clipboard.readImage()
+  const pinClipSize = pinClip.getSize()
+  check(
+    '贴图复制输出标注版且不写截图历史',
+    copyClicked &&
+      pinMeta !== null &&
+      pinClipSize.width === pinMeta.imageWidth &&
+      pinClipSize.height === pinMeta.imageHeight &&
+      countColorPixels(pinClip, ANNOT_BLUE) > 0 &&
+      (await listPinHistory()).length === historyBefore,
+    {
+      copied: pinClipSize,
+      expected: pinMeta ? [pinMeta.imageWidth, pinMeta.imageHeight] : null,
+      blue: countColorPixels(pinClip, ANNOT_BLUE),
+      history: [historyBefore, (await listPinHistory()).length],
+    },
+  )
+
+  await evalJson<boolean>(pinWc, 'window.snipPin.close(); return true;')
+  await waitForValue(() => (pinWin.isDestroyed() ? true : null), 3000)
 }
 
 interface StitchFrameSpec {
@@ -2353,6 +3039,7 @@ async function callOverlayLongFrame(
   wc: WebContents,
   source: OverlayFrameSource,
   bounds: CaptureRegion,
+  annotate = false,
 ): Promise<{ image: ReturnType<typeof nativeImage.createFromDataURL>; scaleX: number; scaleY: number } | null> {
   const origin = nativeImage.createFromDataURL(source.src)
   const size = origin.getSize()
@@ -2369,7 +3056,7 @@ async function callOverlayLongFrame(
   }
   const result = await evalJson<string | null>(
     wc,
-    `return (await window.__snipLongFrame?.(${JSON.stringify(payload)})) ?? null;`,
+    `return (await window.__snipLongFrame?.(${JSON.stringify(payload)}, ${annotate ? 'true' : 'false'})) ?? null;`,
   )
   if (typeof result !== 'string' || !result.startsWith('data:image/png;base64,')) return null
   const frame = nativeImage.createFromDataURL(result)
@@ -2753,6 +3440,7 @@ export async function runSelftest(): Promise<void> {
   await screenshotService.stopCapture()
   await sleep(300)
   try {
+    testAnnotationKernel()
     testPinPlacementMath()
     const settingsShot = join(app.getPath('temp'), 'snip-selftest-settings.png')
     await testHomeWindow(settingsShot)
@@ -2762,6 +3450,7 @@ export async function runSelftest(): Promise<void> {
     await testSave(wc, outcomes, display.scaleFactor)
     await testPin(wc, outcomes, display)
     await testConfirmCopy(wc, outcomes)
+    await testAnnotation(wc, outcomes)
     await testStitchCore(wc)
     await testLongShot(wc, outcomes, display.scaleFactor)
     await testOcrSidebar(wc)

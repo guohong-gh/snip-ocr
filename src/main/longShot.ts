@@ -344,7 +344,8 @@ export class LongShotController {
       await this.close(true)
       return
     }
-    const first = await this.extractFrame(contents, bounds, tick)
+    // 笔迹只在首帧叠加一次：拼接结果顶部保留标注，后续滚动帧保持干净
+    const first = await this.extractFrame(contents, bounds, tick, true)
     if (!first) {
       this.deps.notify('长截图无法开始', '未能获取屏幕画面')
       await this.close(true)
@@ -471,6 +472,7 @@ export class LongShotController {
     contents: WebContents,
     bounds: Bounds,
     tick: { image: NativeImage; scaleX: number; scaleY: number; png: Buffer },
+    annotate = false,
   ): Promise<{ png: Buffer; signature: RowSignatures } | null> {
     try {
       const image = tick.image
@@ -483,7 +485,7 @@ export class LongShotController {
         bounds,
       }
       const result = (await contents.executeJavaScript(
-        `window.__snipLongFrame?.(${JSON.stringify(payload)})`,
+        `window.__snipLongFrame?.(${JSON.stringify(payload)}, ${annotate ? 'true' : 'false'})`,
       )) as unknown
       if (typeof result === 'string' && result.startsWith('data:image/png;base64,')) {
         const png = Buffer.from(result.slice('data:image/png;base64,'.length), 'base64')

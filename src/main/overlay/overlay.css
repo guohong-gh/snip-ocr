@@ -22,13 +22,109 @@
   position: fixed;
   z-index: 2147483002;
   display: none;
-  align-items: center;
-  gap: 2px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
   padding: 4px;
   border: 1px solid #d8dad2;
   border-radius: var(--radius-md);
   background: var(--tone-panel-surface);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+}
+.snip-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+#snip-annot-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+}
+.snip-annot-panel {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 4px 2px 0;
+  border-top: 1px solid var(--snip-strip-hover);
+}
+.snip-annot-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.snip-annot-tool {
+  display: flex;
+  height: 26px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--snip-strip-muted);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  cursor: pointer;
+  transition:
+    background 140ms ease-out,
+    border-color 140ms ease-out,
+    color 140ms ease-out;
+}
+.snip-annot-tool .snip-annot-icon {
+  display: flex;
+  width: 14px;
+  height: 14px;
+  align-items: center;
+  justify-content: center;
+}
+.snip-annot-tool .snip-annot-icon svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+.snip-annot-tool:hover {
+  background: var(--snip-strip-hover);
+  color: var(--snip-strip-ink);
+}
+.snip-annot-tool.active {
+  border-color: var(--snip-signal);
+  background: var(--snip-strip-hover);
+  color: var(--snip-strip-ink);
+}
+.snip-annot-tool:focus-visible,
+.snip-annot-color:focus-visible {
+  outline: 2px solid var(--snip-signal);
+  outline-offset: 1px;
+}
+.snip-annot-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--snip-strip-hover);
+}
+.snip-annot-colors {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.snip-annot-color {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.22);
+  border-radius: 50%;
+  cursor: pointer;
+}
+.snip-annot-color.active {
+  box-shadow:
+    0 0 0 2px var(--tone-panel-surface),
+    0 0 0 3px var(--snip-signal);
+}
+body.snip-annotating .screenshots-canvas-mask {
+  cursor: crosshair !important;
 }
 .screenshots-canvas-border-top,
 .screenshots-canvas-border-right,

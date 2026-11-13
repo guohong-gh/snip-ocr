@@ -28,6 +28,7 @@ export default defineConfig({
         input: {
           index: resolve('src/renderer/index.html'),
           pin: resolve('src/renderer/pin.html'),
+          pinList: resolve('src/renderer/pin-list.html'),
         },
       },
     },

@@ -1,3 +1,5 @@
+import type { SetHotkeyResult } from './settings'
+
 /** 贴图窗与主进程之间的通道 */
 export const PIN_WINDOW_CHANNELS = {
   pinMeta: 'snip:pin-meta',
@@ -9,6 +11,9 @@ export const PIN_WINDOW_CHANNELS = {
   pinResizeStart: 'snip:pin-resize-start',
   pinResizeMove: 'snip:pin-resize-move',
   pinResizeEnd: 'snip:pin-resize-end',
+  pinCopy: 'snip:pin-copy',
+  pinSave: 'snip:pin-save',
+  pinThumbnail: 'snip:pin-thumbnail',
 } as const
 
 export const PIN_RESIZE_DIRECTIONS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const
@@ -38,4 +43,10 @@ export interface PinApi {
   resizeStart(direction: PinResizeDirection, x: number, y: number): void
   resizeMove(x: number, y: number): void
   resizeEnd(): void
+  /** 输出标注版 PNG（已合成笔迹）到剪贴板 */
+  copy(png: ArrayBuffer): Promise<SetHotkeyResult>
+  /** 输出标注版 PNG（已合成笔迹）另存为文件 */
+  save(png: ArrayBuffer): Promise<SetHotkeyResult>
+  /** 回传已合成笔迹的缩略图，供贴图列表展示 */
+  thumbnail(png: ArrayBuffer): void
 }

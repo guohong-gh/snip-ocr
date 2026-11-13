@@ -3,6 +3,7 @@ import { CAPTURE_CHANNELS } from './contracts/capture'
 import { HISTORY_CHANNELS } from './contracts/history'
 import { OCR_CHANNELS } from './contracts/ocr'
 import { PIN_WINDOW_CHANNELS } from './contracts/pinWindow'
+import { PIN_LIST_CHANNELS } from './contracts/pinList'
 import { SETTINGS_CHANNELS } from './contracts/settings'
 import { TRANSLATE_CHANNELS } from './contracts/translate'
 import { UPDATE_CHANNELS } from './contracts/update'
@@ -19,6 +20,7 @@ export * from './contracts/capture'
 export * from './contracts/history'
 export * from './contracts/ocr'
 export * from './contracts/pinWindow'
+export * from './contracts/pinList'
 export * from './contracts/settings'
 export * from './contracts/translate'
 export * from './contracts/update'
@@ -31,6 +33,7 @@ export const IPC = {
   ...TRANSLATE_CHANNELS,
   ...CAPTURE_CHANNELS,
   ...PIN_WINDOW_CHANNELS,
+  ...PIN_LIST_CHANNELS,
   ...APP_WINDOW_CHANNELS,
   ...UPDATE_CHANNELS,
 } as const
@@ -55,6 +58,8 @@ export interface SnipApi {
   startCapture(): void
   pinLast(): void
   closeAllPins(): void
+  /** 展开/收起主窗旁的贴图列表面板 */
+  togglePinList(): void
   setHistoryLimit(limit: HistoryLimit): Promise<SetHotkeyResult>
   listPinHistory(): Promise<PinHistoryItem[]>
   deletePinHistory(id: string): Promise<PinHistoryItem[]>

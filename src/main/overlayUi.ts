@@ -14,6 +14,18 @@ import designTokensCss from '@shared/designTokens.css?raw'
 import overlayCss from './overlay/overlay.css?raw'
 import { installCropSelection } from './overlay/cropSelection'
 import { installLongShotHud } from './overlay/longShotHud'
+import { installAnnotationLayer } from './overlay/annotationLayer'
+import {
+  ANNOTATION_COLORS,
+  ANNOTATION_COLOR_LABELS,
+  ANNOTATION_COLOR_ORDER,
+  ANNOTATION_STROKE_WIDTH,
+  ANNOTATION_TOOL_LABELS,
+  ANNOTATION_TOOLS,
+  appendAnnotationPoint,
+  createAnnotationStroke,
+  renderAnnotations,
+} from '@shared/annotation'
 
 const TOOL_ORDER: ToolKey[] = ['ocr', 'pin', 'save', 'longshot', 'cancel', 'confirm']
 
@@ -43,10 +55,27 @@ function buildScript(icons: Record<ToolKey, string>): string {
   const HUD_PREFIX = ${JSON.stringify(OVERLAY_HUD_RECT_PREFIX)};
   const PIN_REQUEST_KEY = ${JSON.stringify(OVERLAY_PIN_REQUEST_KEY)};
   const REPLY_NAMES = ${JSON.stringify(OVERLAY_REPLY_NAMES)};
+  const ANNOT_COLORS = ${JSON.stringify(ANNOTATION_COLORS)};
+  const ANNOT_COLOR_LABELS = ${JSON.stringify(ANNOTATION_COLOR_LABELS)};
+  const ANNOT_COLOR_ORDER = ${JSON.stringify(ANNOTATION_COLOR_ORDER)};
+  const ANNOT_LABELS = ${JSON.stringify(ANNOTATION_TOOL_LABELS)};
+  const ANNOT_TOOLS = ${JSON.stringify(ANNOTATION_TOOLS)};
+  const ANNOT_STROKE_WIDTH = ${JSON.stringify(ANNOTATION_STROKE_WIDTH)};
 
   if (!window.__snipOverlayInstalled) {
     window.__snipOverlayInstalled = true;
     window.__snipCaptureSeq = 0;
+    window.__snipAnnot = (${installAnnotationLayer.toString()})({
+      colors: ANNOT_COLORS,
+      colorLabels: ANNOT_COLOR_LABELS,
+      labels: ANNOT_LABELS,
+      toolOrder: ANNOT_TOOLS,
+      colorOrder: ANNOT_COLOR_ORDER,
+      strokeWidth: ANNOT_STROKE_WIDTH,
+      createStroke: ${createAnnotationStroke.toString()},
+      appendPoint: ${appendAnnotationPoint.toString()},
+      render: ${renderAnnotations.toString()},
+    });
     installSidebar();
     if (window.screenshots && typeof window.screenshots.on === 'function') {
       // 库的 reset ack 在 rAF 里发送；遮罩隐藏时 rAF 会被节流，主进程会白等 500ms。
@@ -59,6 +88,7 @@ function buildScript(icons: Record<ToolKey, string>): string {
         resetSidebarDrag();
         resetTranslation();
         requestTranslateStatus();
+        window.__snipAnnot?.reset();
         window.__snipCaptureSeq = (window.__snipCaptureSeq || 0) + 1;
         setLongShotCount(0);
       });
@@ -383,6 +413,8 @@ function buildScript(icons: Record<ToolKey, string>): string {
       return;
     }
     if (key === 'save') {
+      // 有笔迹时先用合成图交给库原有保存通道（弹窗/写盘仍由库负责）
+      if (window.__snipAnnot?.hasStrokes() && window.__snipAnnot.commit('save')) return;
       const button = findLibraryButton('保存为文件');
       if (button) button.click();
       return;
@@ -393,11 +425,13 @@ function buildScript(icons: Record<ToolKey, string>): string {
       return;
     }
     if (key === 'confirm') {
+      if (window.__snipAnnot?.hasStrokes() && window.__snipAnnot.commit('copy')) return;
       const button = findLibraryButton('复制到剪贴板');
       if (button) button.click();
       return;
     }
     if (key === 'pin') {
+      if (window.__snipAnnot?.hasStrokes() && window.__snipAnnot.commit('pin')) return;
       const button = findLibraryButton('复制到剪贴板');
       if (!button) return;
       window[PIN_REQUEST_KEY] = true;
@@ -547,6 +581,8 @@ function buildScript(icons: Record<ToolKey, string>): string {
     liveRaf = requestAnimationFrame(updateLiveFrame);
   }
   function startLiveFrame(event) {
+    // 画笔模式下拖拽只画线，不重新框选
+    if (window.__snipAnnot?.active()) return;
     if (liveStart) return;
     const target = event.target;
     if (!(target instanceof Element)) return;
@@ -590,6 +626,9 @@ function buildScript(icons: Record<ToolKey, string>): string {
       document.body.appendChild(toolbar);
     }
     if (!toolbar.querySelector('.snip-tool-btn')) {
+      const actions = document.createElement('div');
+      actions.className = 'snip-toolbar-actions';
+      toolbar.appendChild(actions);
       ORDER.forEach((key) => {
         const button = document.createElement('button');
         button.type = 'button';
@@ -607,13 +646,15 @@ function buildScript(icons: Record<ToolKey, string>): string {
           event.stopPropagation();
           onTool(key);
         });
-        toolbar.appendChild(button);
+        actions.appendChild(button);
       });
     }
+    if (window.__snipAnnot) window.__snipAnnot.mount(toolbar);
     return toolbar;
   }
   function ensureToolbar() {
     installToolbar();
+    if (window.__snipAnnot) window.__snipAnnot.sync();
     positionToolbar();
     if (!liveStart) scheduleSizeBadge();
     const panel = sidebar();
@@ -727,6 +768,15 @@ function buildScript(icons: Record<ToolKey, string>): string {
   // 某些合成/特殊鼠标事件只给 mouseup，不给 pointerup；再兜一次收尾
   window.addEventListener('mouseup', finishLivePointer, { passive: true, capture: true });
   window.addEventListener('pointercancel', () => endLiveFrame(), { passive: true });
+  // 双击复制：有笔迹时改走合成图，避免库内部 compose 丢掉标注
+  window.addEventListener('dblclick', (event) => {
+    const target = event.target;
+    if (target instanceof Element && target.closest('#snip-toolbar, #snip-ocr-sidebar, #snip-long-hud')) return;
+    if (!window.__snipAnnot || window.__snipAnnot.active() || !window.__snipAnnot.hasStrokes()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    window.__snipAnnot.commit('copy');
+  }, { capture: true });
 
   // singleWindow 复用遮罩页时，库的 React 会重建工具栏容器；每次 capture 后主动补回按钮
   if (window.screenshots && typeof window.screenshots.on === 'function') {

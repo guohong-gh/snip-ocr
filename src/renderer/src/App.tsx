@@ -967,6 +967,13 @@ export default function App() {
                         <button
                           type="button"
                           className="link-btn"
+                          onClick={() => window.snip.togglePinList()}
+                        >
+                          贴图列表
+                        </button>
+                        <button
+                          type="button"
+                          className="link-btn"
                           onClick={() => window.snip.closeAllPins()}
                         >
                           关闭全部

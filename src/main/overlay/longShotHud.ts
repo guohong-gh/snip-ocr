@@ -63,7 +63,8 @@ interface LongShotAppendResult {
 }
 
 interface SnipPageWindow extends Window {
-  __snipLongFrame?: (payload: LongShotFramePayload) => Promise<string | null>
+  __snipAnnotRenderInto?: (ctx: CanvasRenderingContext2D, width: number, height: number) => void
+  __snipLongFrame?: (payload: LongShotFramePayload, annotate?: boolean) => Promise<string | null>
   __snipLongAppend?: (startRow: number) => LongShotAppendResult | null
   __snipLongStart?: (bounds: OverlayRect) => void
   __snipLongState?: (state: LongShotStatePayload) => void
@@ -175,7 +176,7 @@ export function installLongShotHud(deps: LongShotHudDeps): LongShotHudApi {
     longPreviewCanvas.style.height = chosen.height + 'px'
   }
 
-  page.__snipLongFrame = (payload) =>
+  page.__snipLongFrame = (payload, annotate) =>
     new Promise((resolve) => {
       if (!payload || typeof payload !== 'object' || typeof payload.dataUrl !== 'string') {
         resolve(null)
@@ -211,6 +212,8 @@ export function installLongShotHud(deps: LongShotHudDeps): LongShotHudApi {
           bounds.width,
           bounds.height,
         )
+        // 长图只在首帧叠加一次笔迹：最终拼接图顶部保留标注，滚动产生的后续帧不再重复
+        if (annotate) page.__snipAnnotRenderInto?.(ctx, bounds.width, bounds.height)
         longFrameCanvas = canvas
         resolve(canvas.toDataURL('image/png'))
       }

@@ -7,6 +7,8 @@ import {
   type OcrLanguagesResult,
   type PinApi,
   type PinHistoryItem,
+  type PinListApi,
+  type PinSummary,
   type PinMeta,
   type SetHotkeyResult,
   type SnipApi,
@@ -30,6 +32,25 @@ const pinApi: PinApi = {
   resizeStart: (direction, x, y) => ipcRenderer.send(IPC.pinResizeStart, direction, x, y),
   resizeMove: (x, y) => ipcRenderer.send(IPC.pinResizeMove, x, y),
   resizeEnd: () => ipcRenderer.send(IPC.pinResizeEnd),
+  copy: (png) => ipcRenderer.invoke(IPC.pinCopy, png) as Promise<SetHotkeyResult>,
+  save: (png) => ipcRenderer.invoke(IPC.pinSave, png) as Promise<SetHotkeyResult>,
+  thumbnail: (png) => ipcRenderer.send(IPC.pinThumbnail, png),
+}
+
+const pinListApi: PinListApi = {
+  list: () => ipcRenderer.invoke(IPC.pinListGet) as Promise<PinSummary[]>,
+  action: (id, action) => {
+    ipcRenderer.send(IPC.pinListAction, id, action)
+    return Promise.resolve()
+  },
+  close: () => ipcRenderer.send(IPC.pinListClose),
+  onChanged: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, pins: PinSummary[]): void => listener(pins)
+    ipcRenderer.on(IPC.pinListChanged, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.pinListChanged, handler)
+    }
+  },
 }
 
 const api: SnipApi = {
@@ -58,6 +79,7 @@ const api: SnipApi = {
   startCapture: () => ipcRenderer.send(IPC.homeStartCapture),
   pinLast: () => ipcRenderer.send(IPC.pinLast),
   closeAllPins: () => ipcRenderer.send(IPC.pinCloseAll),
+  togglePinList: () => ipcRenderer.send(IPC.pinListToggle),
   setHistoryLimit: (limit: HistoryLimit) =>
     ipcRenderer.invoke(IPC.setHistoryLimit, limit) as Promise<SetHotkeyResult>,
   listPinHistory: () => ipcRenderer.invoke(IPC.pinHistoryList) as Promise<PinHistoryItem[]>,
@@ -111,9 +133,11 @@ const api: SnipApi = {
   pin: pinApi,
 }
 
-/** 贴图页只暴露贴图窗 API，主窗只暴露完整 snip API */
+/** 贴图页只暴露贴图窗 API，贴图列表面板只暴露列表 API，主窗暴露完整 snip API */
 const currentPathname = (globalThis as { location?: { pathname?: string } }).location?.pathname ?? ''
 const isPinPage = currentPathname.endsWith('pin.html')
+const isPinListPage = currentPathname.endsWith('pin-list.html')
 
 if (isPinPage) contextBridge.exposeInMainWorld('snipPin', pinApi)
+else if (isPinListPage) contextBridge.exposeInMainWorld('snipPinList', pinListApi)
 else contextBridge.exposeInMainWorld('snip', api)

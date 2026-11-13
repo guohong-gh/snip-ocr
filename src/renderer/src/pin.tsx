@@ -2,11 +2,26 @@ import { StrictMode, useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import { PIN_RESIZE_DIRECTIONS, type PinMeta, type PinResizeDirection } from '@shared/ipc'
+import {
+  ANNOTATION_COLORS,
+  ANNOTATION_COLOR_LABELS,
+  ANNOTATION_COLOR_ORDER,
+  ANNOTATION_STROKE_WIDTH,
+  ANNOTATION_TOOL_LABELS,
+  ANNOTATION_TOOLS,
+  appendAnnotationPoint,
+  createAnnotationStroke,
+  renderAnnotations,
+  type AnnotationColor,
+  type AnnotationStroke,
+  type AnnotationTool,
+} from '@shared/annotation'
 import './pin.css'
 
-const DOUBLE_CLICK_MS = 350
-const DOUBLE_CLICK_SLOP = 5
 const DRAG_SLOP = 3
+/** 回传列表缩略图的最长边（像素），主进程会再按需要缩放 */
+const THUMB_MAX_SIDE = 192
+const THUMB_DELAY_MS = 200
 
 const imageUrl = new URLSearchParams(window.location.search).get('image')
 
@@ -16,6 +31,29 @@ function closePin(reason: string): void {
 }
 
 type GestureMode = 'idle' | 'move' | 'resize'
+
+function ToolIcon({ tool }: { tool: AnnotationTool }) {
+  if (tool === 'pen') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 21l3.6-1.2L20 6.4a2.1 2.1 0 0 0-3-3L3.6 16.8z" />
+        <path d="M14.5 5.5l4 4" />
+      </svg>
+    )
+  }
+  if (tool === 'rect') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3.5" y="5.5" width="17" height="13" rx="1" />
+      </svg>
+    )
+  }
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <ellipse cx="12" cy="12" rx="8.5" ry="6.5" />
+    </svg>
+  )
+}
 
 function capturePointer(target: HTMLElement, pointerId: number): void {
   try {
@@ -29,7 +67,6 @@ function PinView() {
   const gesture = useRef<GestureMode>('idle')
   const startPoint = useRef({ x: 0, y: 0 })
   const moved = useRef(false)
-  const lastTap = useRef<{ time: number; x: number; y: number } | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const geometryRef = useRef({
     viewportWidth: 0,
@@ -43,6 +80,20 @@ function PinView() {
   const [viewport, setViewport] = useState({ width: 0, height: 0 })
   const [natural, setNatural] = useState<{ width: number; height: number } | null>(null)
   const [meta, setMeta] = useState<PinMeta | null>(null)
+  const [tool, setTool] = useState<AnnotationTool | null>(null)
+  const [color, setColor] = useState<AnnotationColor>('red')
+  const [strokes, setStrokes] = useState<AnnotationStroke[]>([])
+  const [hint, setHint] = useState('')
+  const annotCanvasRef = useRef<HTMLCanvasElement>(null)
+  const imageRef = useRef<HTMLImageElement>(null)
+  const draft = useRef<AnnotationStroke | null>(null)
+  const flashTimer = useRef<number | null>(null)
+  const strokesRef = useRef<AnnotationStroke[]>([])
+  const thumbTimer = useRef<number | null>(null)
+
+  useEffect(() => {
+    strokesRef.current = strokes
+  }, [strokes])
 
   useEffect(() => {
     const root = rootRef.current
@@ -89,6 +140,7 @@ function PinView() {
           y: cy - (cy - previousY) * ratio - geometry.baseY,
         }
       })
+      scheduleThumbnail()
     }
     window.addEventListener('wheel', onWheel, { passive: false })
     return () => window.removeEventListener('wheel', onWheel)
@@ -166,8 +218,138 @@ function PinView() {
     }
   }, [viewport.width, viewport.height, baseWidth, baseHeight, baseX, baseY])
 
+  // 标注画布跟随图片同一组几何变换，内部像素按 DPR 放大保证笔迹清晰
+  useEffect(() => {
+    const canvas = annotCanvasRef.current
+    if (!canvas) return
+    const width = Math.max(1, Math.round(baseWidth * dpr))
+    const height = Math.max(1, Math.round(baseHeight * dpr))
+    if (canvas.width !== width) canvas.width = width
+    if (canvas.height !== height) canvas.height = height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    renderAnnotations(ctx, strokes, canvas.width, canvas.height)
+  }, [strokes, baseWidth, baseHeight, dpr])
+
+  useEffect(() => {
+    return () => {
+      if (flashTimer.current !== null) window.clearTimeout(flashTimer.current)
+      if (thumbTimer.current !== null) window.clearTimeout(thumbTimer.current)
+    }
+  }, [])
+
+  const flash = (text: string): void => {
+    setHint(text)
+    if (flashTimer.current !== null) window.clearTimeout(flashTimer.current)
+    flashTimer.current = window.setTimeout(() => {
+      flashTimer.current = null
+      setHint('')
+    }, 1600)
+  }
+
+  const annotationPoint = (event: ReactPointerEvent<HTMLElement>) => {
+    const canvas = annotCanvasRef.current
+    if (!canvas) return null
+    const rect = canvas.getBoundingClientRect()
+    if (rect.width < 1 || rect.height < 1) return null
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+    }
+  }
+
+  const onToolSelect = (next: AnnotationTool): void => {
+    setTool((prev) => (prev === next ? null : next))
+    draft.current = null
+  }
+
+  /** 导出标注版：按原图像素重绘图片 + 笔迹，复制/保存都走这里 */
+  const renderAnnotatedPng = async (): Promise<ArrayBuffer | null> => {
+    const image = imageRef.current
+    if (!image || !natural) return null
+    const canvas = document.createElement('canvas')
+    canvas.width = natural.width
+    canvas.height = natural.height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    ctx.drawImage(image, 0, 0, natural.width, natural.height)
+    renderAnnotations(ctx, strokes, natural.width, natural.height)
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob((value) => resolve(value), 'image/png')
+    })
+    return blob ? blob.arrayBuffer() : null
+  }
+
+  /** 回传带笔迹的列表缩略图：直接按缩略尺寸重绘，不传整张原图 */
+  const pushThumbnail = async (): Promise<void> => {
+    const image = imageRef.current
+    if (!image || image.naturalWidth <= 0 || image.naturalHeight <= 0) return
+    const ratio = Math.min(1, THUMB_MAX_SIDE / Math.max(image.naturalWidth, image.naturalHeight))
+    const width = Math.max(1, Math.round(image.naturalWidth * ratio))
+    const height = Math.max(1, Math.round(image.naturalHeight * ratio))
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.drawImage(image, 0, 0, width, height)
+    renderAnnotations(ctx, strokesRef.current, width, height)
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob((value) => resolve(value), 'image/png')
+    })
+    if (!blob) return
+    window.snipPin.thumbnail(await blob.arrayBuffer())
+  }
+
+  /** 首次加载、落笔结束、缩放结束后各回传一次，短时间内的多次变化合并 */
+  const scheduleThumbnail = (): void => {
+    if (thumbTimer.current !== null) window.clearTimeout(thumbTimer.current)
+    thumbTimer.current = window.setTimeout(() => {
+      thumbTimer.current = null
+      void pushThumbnail()
+    }, THUMB_DELAY_MS)
+  }
+
+  const copyAnnotated = async (): Promise<void> => {
+    const data = await renderAnnotatedPng()
+    if (!data) return
+    const result = await window.snipPin.copy(data)
+    flash(result.ok ? '已复制' : (result.error ?? '复制失败'))
+  }
+
+  const saveAnnotated = async (): Promise<void> => {
+    const data = await renderAnnotatedPng()
+    if (!data) return
+    const result = await window.snipPin.save(data)
+    if (!result.ok && result.error === '已取消') return
+    flash(result.ok ? '已保存' : (result.error ?? '保存失败'))
+  }
+
+  const stopToolbarPointer = (event: ReactPointerEvent<HTMLElement>): void => {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (event.button !== 0 || gesture.current !== 'idle') return
+    if (event.button !== 0) return
+    if (tool) {
+      const point = annotationPoint(event)
+      if (!point) return
+      event.preventDefault()
+      event.stopPropagation()
+      draft.current = createAnnotationStroke(
+        tool,
+        ANNOTATION_COLORS[color],
+        Math.max(1, baseWidth),
+        point,
+        ANNOTATION_STROKE_WIDTH,
+      )
+      setStrokes((prev) => [...prev, draft.current as AnnotationStroke])
+      capturePointer(event.currentTarget, event.pointerId)
+      return
+    }
+    if (gesture.current !== 'idle') return
     gesture.current = 'move'
     moved.current = false
     startPoint.current = { x: event.screenX, y: event.screenY }
@@ -176,6 +358,16 @@ function PinView() {
   }
 
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (tool && draft.current) {
+      const point = annotationPoint(event)
+      if (!point) return
+      event.preventDefault()
+      event.stopPropagation()
+      appendAnnotationPoint(draft.current, point)
+      const next = { ...draft.current, points: draft.current.points.slice() }
+      setStrokes((prev) => prev.map((stroke, index) => (index === prev.length - 1 ? next : stroke)))
+      return
+    }
     if (gesture.current === 'idle') return
     if (
       Math.abs(event.screenX - startPoint.current.x) > DRAG_SLOP ||
@@ -187,53 +379,45 @@ function PinView() {
     else window.snipPin.resizeMove(event.screenX, event.screenY)
   }
 
-  const finishGesture = (event: ReactPointerEvent<HTMLDivElement>, canDoubleClick: boolean): void => {
+  const finishGesture = (): void => {
     if (gesture.current === 'move') {
       window.snipPin.dragEnd()
       gesture.current = 'idle'
-      if (!canDoubleClick || moved.current) {
-        lastTap.current = null
-        return
-      }
-      const now = performance.now()
-      const previous = lastTap.current
-      const isDouble =
-        previous !== null &&
-        now - previous.time <= DOUBLE_CLICK_MS &&
-        Math.abs(event.screenX - previous.x) <= DOUBLE_CLICK_SLOP &&
-        Math.abs(event.screenY - previous.y) <= DOUBLE_CLICK_SLOP
-      if (isDouble) {
-        lastTap.current = null
-        closePin('double-click')
-        return
-      }
-      lastTap.current = { time: now, x: event.screenX, y: event.screenY }
       return
     }
     if (gesture.current === 'resize') {
       window.snipPin.resizeEnd()
       gesture.current = 'idle'
-      lastTap.current = null
     }
   }
 
-  const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    finishGesture(event, true)
+  const onPointerUp = (): void => {
+    if (tool) {
+      draft.current = null
+      scheduleThumbnail()
+      return
+    }
+    finishGesture()
   }
 
-  const onPointerCancel = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    finishGesture(event, false)
+  const onPointerCancel = (): void => {
+    if (tool) {
+      draft.current = null
+      scheduleThumbnail()
+      return
+    }
+    finishGesture()
   }
 
   const onHandlePointerDown = (direction: PinResizeDirection) => {
     return (event: ReactPointerEvent<HTMLDivElement>): void => {
+      if (tool) return
       if (event.button !== 0 || gesture.current !== 'idle') return
       event.preventDefault()
       event.stopPropagation()
       gesture.current = 'resize'
       moved.current = false
       startPoint.current = { x: event.screenX, y: event.screenY }
-      lastTap.current = null
       capturePointer(event.currentTarget, event.pointerId)
       window.snipPin.resizeStart(direction, event.screenX, event.screenY)
     }
@@ -242,7 +426,7 @@ function PinView() {
   return (
     <div
       ref={rootRef}
-      className="pin-root"
+      className={`pin-root${tool ? ' pin-drawing' : ''}`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -251,6 +435,7 @@ function PinView() {
     >
       {imageUrl ? (
         <img
+          ref={imageRef}
           className="pin-image"
           src={imageUrl}
           alt=""
@@ -269,8 +454,21 @@ function PinView() {
             const image = event.currentTarget
             setNatural({ width: image.naturalWidth, height: image.naturalHeight })
             window.snipPin.ready()
+            scheduleThumbnail()
           }}
           onError={() => closePin('image-error')}
+        />
+      ) : null}
+      {imageUrl && hasGeometry ? (
+        <canvas
+          ref={annotCanvasRef}
+          className="pin-annot-canvas"
+          aria-hidden="true"
+          style={{
+            width: `${baseWidth}px`,
+            height: `${baseHeight}px`,
+            transform: `translate(${imageLeft}px, ${imageTop}px) scale(${view.zoom})`,
+          }}
         />
       ) : null}
       <div
@@ -293,7 +491,7 @@ function PinView() {
           onPointerDown={onHandlePointerDown(direction)}
         />
       ))}
-      <div className="pin-bar" aria-hidden="true">
+      <div className="pin-bar">
         <span className="pin-tag">PIN</span>
         {meta ? (
           <span className="pin-dims">
@@ -301,6 +499,73 @@ function PinView() {
           </span>
         ) : null}
         <span className="pin-zoom">{Math.round(view.zoom * 100)}%</span>
+        <span className="pin-tools">
+          {ANNOTATION_TOOLS.map((key) => (
+            <button
+              key={key}
+              type="button"
+              className={`pin-tool${tool === key ? ' active' : ''}`}
+              data-pin-tool={key}
+              aria-label={ANNOTATION_TOOL_LABELS[key]}
+              title={ANNOTATION_TOOL_LABELS[key]}
+              onPointerDown={stopToolbarPointer}
+              onPointerUp={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation()
+                onToolSelect(key)
+              }}
+            >
+              <ToolIcon tool={key} />
+            </button>
+          ))}
+        </span>
+        <span className="pin-tools-divider" />
+        <span className="pin-colors">
+          {ANNOTATION_COLOR_ORDER.map((name) => (
+            <button
+              key={name}
+              type="button"
+              className={`pin-color${color === name ? ' active' : ''}`}
+              data-pin-color={name}
+              style={{ backgroundColor: ANNOTATION_COLORS[name] }}
+              aria-label={ANNOTATION_COLOR_LABELS[name]}
+              title={ANNOTATION_COLOR_LABELS[name]}
+              onPointerDown={stopToolbarPointer}
+              onPointerUp={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation()
+                setColor(name)
+              }}
+            />
+          ))}
+        </span>
+        <span className="pin-hint">{hint}</span>
+        <button
+          type="button"
+          className="pin-action"
+          data-pin-action="copy"
+          onPointerDown={stopToolbarPointer}
+          onPointerUp={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation()
+            void copyAnnotated()
+          }}
+        >
+          复制
+        </button>
+        <button
+          type="button"
+          className="pin-action"
+          data-pin-action="save"
+          onPointerDown={stopToolbarPointer}
+          onPointerUp={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation()
+            void saveAnnotated()
+          }}
+        >
+          保存
+        </button>
       </div>
       <button
         type="button"

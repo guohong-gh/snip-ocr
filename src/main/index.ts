@@ -23,6 +23,8 @@ import {
   setQuitting,
 } from './homeWindow'
 import { pinService, registerPinScheme } from './pin'
+import { disposePinList, initPinListWindow } from './pinListWindow'
+import { confirmAndCloseAllPins } from './pinClose'
 import { registerIpc } from './ipc/registry'
 import {
   listPinHistory,
@@ -145,10 +147,11 @@ function boot(): void {
   refreshHistoryState()
 
   void pinService.init()
+  initPinListWindow()
   createTray({
     startCapture: () => void startCapture(),
     pinCount: () => pinService.count,
-    closeAllPins: () => pinService.closeAll(),
+    closeAllPins: () => void confirmAndCloseAllPins(),
     quit: () => app.quit(),
   })
   setTrayHintSeen(config.trayHintShown)
@@ -196,7 +199,7 @@ function boot(): void {
     appWindow: {
       startCapture,
       pinLast: pinLastCapture,
-      closeAllPins: () => pinService.closeAll(),
+      closeAllPins: () => void confirmAndCloseAllPins(),
       windowAction: (action) => homeWindowAction(action),
       markHomeReady: () => markHomeReady(),
     },
@@ -233,6 +236,7 @@ if (!app.requestSingleInstanceLock()) {
     updateService?.dispose()
     screenshotService.dispose()
     pinService.dispose()
+    disposePinList()
     disposeHome()
     destroyTray()
   })

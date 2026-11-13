@@ -40,6 +40,24 @@ body {
   transform-origin: 0 0;
 }
 
+/* 标注画布与图片共用几何变换，只承载笔迹 */
+.pin-annot-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  pointer-events: none;
+  transform-origin: 0 0;
+}
+
+.pin-root.pin-drawing {
+  cursor: crosshair;
+}
+
+.pin-root.pin-drawing .pin-handle {
+  pointer-events: none;
+}
+
 /* 边框与图片共用同一组几何值（pin.tsx 内联 left/top/width/height），不占布局 */
 .pin-frame {
   position: fixed;
@@ -131,7 +149,8 @@ body {
   display: flex;
   height: 28px;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  overflow: hidden;
   padding: 0 34px 0 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.18);
   background: var(--tone-panel-scrim);
@@ -168,6 +187,99 @@ body {
   margin-left: auto;
   color: var(--tone-panel-inverse);
   font-variant-numeric: tabular-nums;
+}
+
+.pin-tools,
+.pin-colors {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 3px;
+}
+
+.pin-tools-divider {
+  width: 1px;
+  height: 14px;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.pin-tool {
+  display: flex;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--tone-panel-inverse);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.pin-tool svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+}
+
+.pin-tool:hover {
+  background: var(--tone-panel-hover);
+}
+
+.pin-tool.active {
+  border-color: var(--tone-panel-signal);
+  background: var(--tone-panel-hover);
+  color: var(--tone-panel-bright);
+}
+
+.pin-color {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  border-radius: 50%;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.pin-color.active {
+  box-shadow:
+    0 0 0 1px var(--tone-panel-scrim),
+    0 0 0 2px var(--tone-panel-bright);
+}
+
+.pin-hint {
+  overflow: hidden;
+  max-width: 64px;
+  flex-shrink: 1;
+  color: var(--tone-panel-bright);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pin-action {
+  height: 20px;
+  flex-shrink: 0;
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--tone-panel-inverse);
+  font-family: inherit;
+  font-size: 9.5px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.pin-action:hover {
+  border-color: var(--tone-panel-signal);
+  color: var(--tone-panel-bright);
 }
 
 .pin-close {

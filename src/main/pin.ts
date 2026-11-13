@@ -1,4 +1,4 @@
-import { BrowserWindow, app, nativeImage, net, protocol, screen } from 'electron'
+import { BrowserWindow, app, clipboard, dialog, nativeImage, net, protocol, screen } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -7,6 +7,7 @@ import {
   PIN_RESIZE_DIRECTIONS,
   type PinMeta,
   type PinResizeDirection,
+  type PinSummary,
   type SetHotkeyResult,
 } from '@shared/ipc'
 import { recordPinHistory, type PinHistoryImage } from './pinHistory'
@@ -17,6 +18,8 @@ const PIN_TITLE = 'snip-pin'
 const PIN_SCHEME = 'snip-pin'
 const PIN_HOST = 'image'
 const MIN_PIN_SIZE = 24
+/** 列表缩略图最长边（像素），与截图历史缩略图保持同一档 */
+const THUMB_MAX_SIDE = 192
 const READY_TIMEOUT_MS = 5000
 const READY_TIMEOUT_DEV_MS = 8000
 
@@ -194,6 +197,13 @@ interface PinInstance {
   contentHeight: number
   shown: boolean
   settled: boolean
+  /** 用户从列表收起：窗口 hide 但实例与渲染状态（笔迹/缩放）保留 */
+  hidden: boolean
+  /** 收起前的置顶属性：Windows 上 hide/showInactive 后需要按原值重申 */
+  alwaysOnTop: boolean
+  /** 已合成笔迹的缩略图 PNG 与对应的 data URL，由贴图窗回传 */
+  thumbBuffer: Buffer | null
+  thumbUrl: string | null
   resolveReady: ((meta: PinMeta) => void) | null
   rejectReady: ((error: Error) => void) | null
   readyTimer: NodeJS.Timeout | null
@@ -210,6 +220,12 @@ interface PointerGesture {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
+}
+
+function toImageBuffer(data: unknown): Buffer | null {
+  if (data instanceof Uint8Array) return Buffer.from(data)
+  if (data instanceof ArrayBuffer) return Buffer.from(new Uint8Array(data))
+  return null
 }
 
 function isResizeDirection(value: unknown): value is PinResizeDirection {
@@ -243,7 +259,12 @@ class PinService {
   }
 
   init(): Promise<void> {
-    this.initPromise ??= this.doInit()
+    if (!this.initPromise) {
+      this.initPromise = this.doInit()
+      // 显示器变化后把可能落到可见区外的贴图拉回来（诊断确认原先缺失）
+      screen.on('display-metrics-changed', this.handleDisplaysChanged)
+      screen.on('display-removed', this.handleDisplaysChanged)
+    }
     return this.initPromise
   }
 
@@ -358,6 +379,10 @@ class PinService {
       contentHeight: placement.height,
       shown: false,
       settled: false,
+      hidden: false,
+      alwaysOnTop: true,
+      thumbBuffer: null,
+      thumbUrl: null,
       resolveReady: null,
       rejectReady: null,
       readyTimer: null,
@@ -448,6 +473,149 @@ class PinService {
     return instance ? this.metaOf(instance) : null
   }
 
+  /** 贴图列表：新贴的排在前面；隐藏的实例仍在列表里 */
+  list(): PinSummary[] {
+    return [...this.instances.values()]
+      .filter((instance) => !instance.win.isDestroyed())
+      .sort((a, b) => b.id - a.id)
+      .map((instance) => ({
+        id: instance.id,
+        thumbUrl: instance.thumbUrl,
+        imageWidth: instance.imageWidth,
+        imageHeight: instance.imageHeight,
+        hidden: instance.hidden,
+        alwaysOnTop: instance.hidden ? instance.alwaysOnTop : instance.win.isAlwaysOnTop(),
+      }))
+  }
+
+  /** 贴图窗回传合成笔迹后的图，主进程负责缩放与缓存，列表直接取 data URL */
+  setThumb(senderId: number, data: unknown): void {
+    const instance = this.instances.get(senderId)
+    if (!instance || instance.win.isDestroyed()) return
+    const buffer = toImageBuffer(data)
+    if (!buffer) return
+    const image = nativeImage.createFromBuffer(buffer)
+    if (image.isEmpty()) return
+    const size = image.getSize()
+    const ratio = Math.min(1, THUMB_MAX_SIDE / Math.max(size.width, size.height))
+    const thumb =
+      ratio >= 1
+        ? image
+        : image.resize({
+            width: Math.max(1, Math.round(size.width * ratio)),
+            height: Math.max(1, Math.round(size.height * ratio)),
+            quality: 'good',
+          })
+    const png = thumb.toPNG()
+    // 内容没变就不广播，节流之外的重复回传不会引起列表重绘
+    if (instance.thumbBuffer && instance.thumbBuffer.equals(png)) return
+    instance.thumbBuffer = png
+    instance.thumbUrl = `data:image/png;base64,${png.toString('base64')}`
+    this.emitChange()
+  }
+
+  /** 隐藏只收起窗口，不销毁，笔迹与缩放状态留在渲染进程 */
+  setHidden(id: number, hidden: boolean): void {
+    const instance = this.findByPublicId(id)
+    if (!instance || instance.win.isDestroyed() || instance.hidden === hidden) return
+    if (hidden) {
+      // 收起前记录置顶属性：hide/showInactive 会丢失 topmost
+      instance.alwaysOnTop = instance.win.isAlwaysOnTop()
+      instance.win.hide()
+    } else {
+      this.clampToVisible(instance)
+      instance.win.showInactive()
+      instance.win.setAlwaysOnTop(instance.alwaysOnTop)
+    }
+    instance.hidden = hidden
+    this.emitChange()
+  }
+
+  /** 一次性提到最前，不改变窗口原有的 alwaysOnTop 属性 */
+  bringToFront(id: number): void {
+    const instance = this.findByPublicId(id)
+    if (!instance || instance.win.isDestroyed()) return
+    this.clampToVisible(instance)
+    if (!instance.win.isVisible()) {
+      instance.win.showInactive()
+      instance.win.setAlwaysOnTop(instance.alwaysOnTop)
+      instance.hidden = false
+    }
+    instance.win.moveTop()
+    this.emitChange()
+  }
+
+  private findByPublicId(id: number): PinInstance | null {
+    for (const instance of this.instances.values()) {
+      if (instance.id === id) return instance
+    }
+    return null
+  }
+
+  /** 把窗口夹回当前显示器工作区；返回是否发生了移动或缩放 */
+  private clampToVisible(instance: PinInstance): boolean {
+    if (instance.win.isDestroyed()) return false
+    const bounds = instance.win.getBounds()
+    const display = screen.getDisplayNearestPoint({
+      x: Math.round(bounds.x + bounds.width / 2),
+      y: Math.round(bounds.y + bounds.height / 2),
+    })
+    const area = display.workArea
+    const width = Math.min(bounds.width, area.width)
+    const height = Math.min(bounds.height, area.height)
+    const x = Math.min(Math.max(bounds.x, area.x), area.x + area.width - width)
+    const y = Math.min(Math.max(bounds.y, area.y), area.y + area.height - height)
+    if (x === bounds.x && y === bounds.y && width === bounds.width && height === bounds.height) {
+      return false
+    }
+    instance.win.setBounds({ x, y, width, height })
+    instance.contentWidth = width
+    instance.contentHeight = height
+    return true
+  }
+
+  private handleDisplaysChanged = (): void => {
+    let changed = false
+    for (const instance of this.instances.values()) {
+      if (instance.win.isDestroyed()) continue
+      if (this.clampToVisible(instance)) changed = true
+    }
+    if (changed) this.emitChange()
+  }
+
+  /** 复制当前贴图的标注版（由渲染进程合成后传入 PNG） */
+  async copyFor(senderId: number, data: unknown): Promise<SetHotkeyResult> {
+    const instance = this.instances.get(senderId)
+    if (!instance || instance.win.isDestroyed()) return { ok: false, error: '贴图窗口已关闭' }
+    const buffer = toImageBuffer(data)
+    if (!buffer) return { ok: false, error: '图片数据无效' }
+    const image = nativeImage.createFromBuffer(buffer)
+    if (image.isEmpty()) return { ok: false, error: '图片数据无效' }
+    clipboard.writeImage(image)
+    return { ok: true }
+  }
+
+  /** 保存当前贴图的标注版；不写入截图历史 */
+  async saveFor(senderId: number, data: unknown): Promise<SetHotkeyResult> {
+    const instance = this.instances.get(senderId)
+    if (!instance || instance.win.isDestroyed()) return { ok: false, error: '贴图窗口已关闭' }
+    const buffer = toImageBuffer(data)
+    if (!buffer) return { ok: false, error: '图片数据无效' }
+    try {
+      const picked = await dialog.showSaveDialog(instance.win, {
+        title: '保存贴图',
+        defaultPath: join(app.getPath('pictures'), `snip-pin-${Date.now()}.png`),
+        filters: [{ name: 'PNG 图片', extensions: ['png'] }],
+      })
+      if (picked.canceled || !picked.filePath) return { ok: false, error: '已取消' }
+      await writeFile(picked.filePath, buffer)
+      return { ok: true }
+    } catch (error) {
+      pinDebug('save failed', error)
+      return { ok: false, error: '保存失败' }
+    }
+  }
+
   markReady(senderId: number): void {
     const instance = this.instances.get(senderId)
     pinDebug('ready', { senderId, found: Boolean(instance), shown: instance?.shown ?? null })
@@ -458,6 +626,8 @@ class PinService {
       instance.readyTimer = null
     }
     instance.win.show()
+    // show 后按原属性重申置顶：Windows 上对隐藏窗口设置的 topmost 可能不生效
+    instance.win.setAlwaysOnTop(instance.alwaysOnTop)
     instance.win.focus()
     this.scheduleContentSizeFix(instance)
     this.settleReady(instance, this.metaOf(instance))
@@ -658,6 +828,8 @@ class PinService {
     this.closeAll()
     this.gestures.clear()
     this.listeners.clear()
+    screen.removeListener('display-metrics-changed', this.handleDisplaysChanged)
+    screen.removeListener('display-removed', this.handleDisplaysChanged)
   }
 }
 

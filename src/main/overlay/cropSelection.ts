@@ -5,12 +5,17 @@
  */
 
 interface SnipPageWindow extends Window {
-  __snipCropSelection?: () => string | null
+  __snipCropSelection?: (options?: { annotations?: boolean }) => string | null
+  __snipAnnotRenderInto?: (
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+  ) => void
 }
 
 export function installCropSelection(): void {
   const page = window as SnipPageWindow
-  page.__snipCropSelection = () => {
+  page.__snipCropSelection = (options) => {
     const image = document.querySelector('.screenshots-background-image')
     const canvas = document.querySelector('.screenshots-canvas')
     if (!(image instanceof HTMLImageElement) || !canvas) return null
@@ -30,6 +35,8 @@ export function installCropSelection(): void {
     const ctx = output.getContext('2d')
     if (!ctx) return null
     ctx.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh)
+    // OCR 继续走不带笔迹的裁剪；只有复制/保存/贴图导出时才叠加标注
+    if (options && options.annotations) page.__snipAnnotRenderInto?.(ctx, sw, sh)
     return output.toDataURL('image/png')
   }
 }
